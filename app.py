@@ -37,7 +37,7 @@ def channel_value(*names, default):
                 return value if value.startswith("@") else "@"+value
     return default
 
-SOURCE_CHANNEL=channel_value("SOURCE_CHANNEL_ID","SOURCE_CHANNEL",default="@GEM_SERIES_TJ")
+SOURCE_CHANNEL=channel_value("SOURCE_CHANNEL_ID","AUTHORIZED_SOURCE_CHANNEL_ID","SOURCE_CHANNEL",default="@GEM_SERIES_TJ")
 DATABASE_CHANNEL=channel_value("DATABASE_CHANNEL_ID","DATABASE_CHANNEL",default="@database_gem_series")
 DESTINATION_CHANNEL=channel_value("TARGET_CHANNEL_ID","DESTINATION_CHANNEL_ID","DESTINATION_CHANNEL",default="@afsonaishab")
 SUBSCRIPTION_CHANNEL=channel_value("SUBSCRIPTION_CHANNEL_ID","SUBSCRIPTION_CHANNEL",default="@tm_score")
@@ -196,8 +196,8 @@ async def subscription_ok(user_id):
     try:
         member=await bot.get_chat_member(SUBSCRIPTION_CHANNEL,user_id)
         return member.status in {ChatMemberStatus.MEMBER,ChatMemberStatus.ADMINISTRATOR,ChatMemberStatus.CREATOR}
-    except Exception:
-        log.exception("Membership check failed")
+    except Exception as exc:
+        log.error("Membership check failed for channel=%r user=%s: %s", SUBSCRIPTION_CHANNEL, user_id, exc)
         return False
 
 @dp.message(CommandStart())
@@ -236,8 +236,14 @@ async def lifespan(app:FastAPI):
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
     await start_mtproto_listener()
-    await bot.set_webhook(url=f"{PUBLIC_URL}/telegram/webhook",secret_token=WEBHOOK_SECRET,
-                          allowed_updates=dp.resolve_used_update_types(),drop_pending_updates=False)
+    webhook_info=await bot.get_webhook_info()
+    target_webhook=f"{PUBLIC_URL}/telegram/webhook"
+    if webhook_info.url != target_webhook:
+        await bot.set_webhook(url=target_webhook,secret_token=WEBHOOK_SECRET,
+                              allowed_updates=dp.resolve_used_update_types(),drop_pending_updates=False)
+    log.info("Telegram webhook ready: %s", target_webhook)
+    log.info("Channel config: source=%r archive=%r target=%r subscription=%r",
+             SOURCE_CHANNEL,DATABASE_CHANNEL,DESTINATION_CHANNEL,SUBSCRIPTION_CHANNEL)
     log.info("GEM SERIES started; PostgreSQL connected.")
     try:
         yield
