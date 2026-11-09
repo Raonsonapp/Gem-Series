@@ -27,10 +27,20 @@ PUBLIC_URL=os.environ["PUBLIC_URL"].rstrip("/")
 API_ID=int(os.environ["TELEGRAM_API_ID"])
 API_HASH=os.environ["TELEGRAM_API_HASH"]
 BOT_USERNAME=os.getenv("BOT_USERNAME","GEMSERIESTVBOT").lstrip("@")
-SOURCE_CHANNEL=os.getenv("SOURCE_CHANNEL","GEM_SERIES_TJ").lstrip("@")
-DATABASE_CHANNEL=os.getenv("DATABASE_CHANNEL","@database_gem_series")
-DESTINATION_CHANNEL=os.getenv("DESTINATION_CHANNEL","@afsonaishab")
-SUBSCRIPTION_CHANNEL=os.getenv("SUBSCRIPTION_CHANNEL","@tm_score")
+def channel_value(*names, default):
+    for name in names:
+        value=os.getenv(name,"").strip()
+        if value:
+            try:
+                return int(value)
+            except ValueError:
+                return value if value.startswith("@") else "@"+value
+    return default
+
+SOURCE_CHANNEL=channel_value("SOURCE_CHANNEL_ID","SOURCE_CHANNEL",default="@GEM_SERIES_TJ")
+DATABASE_CHANNEL=channel_value("DATABASE_CHANNEL_ID","DATABASE_CHANNEL",default="@database_gem_series")
+DESTINATION_CHANNEL=channel_value("TARGET_CHANNEL_ID","DESTINATION_CHANNEL_ID","DESTINATION_CHANNEL",default="@afsonaishab")
+SUBSCRIPTION_CHANNEL=channel_value("SUBSCRIPTION_CHANNEL_ID","SUBSCRIPTION_CHANNEL",default="@tm_score")
 DESTINATION_URL=os.getenv("CHANNEL_URL","https://t.me/afsonaishab")
 SUBSCRIPTION_URL=os.getenv("SUBSCRIPTION_URL","https://t.me/tm_score")
 SPONSOR_BOT_URL=os.getenv("SPONSOR_BOT_URL","").strip()
@@ -165,7 +175,7 @@ async def start_mtproto_listener():
     row=await pool.fetchrow(
       "SELECT session_data FROM gem_listener_sessions WHERE session_name='gem-series-user'")
     if not row:
-        log.error("No MTProto session in PostgreSQL. Run the one-time local session setup script.")
+        log.error("No MTProto session in PostgreSQL. Channel IDs alone cannot authorize reading the source channel; run the one-time local session setup.")
         return
     user_client=TelegramClient(StringSession(row["session_data"]),API_ID,API_HASH)
     await user_client.connect()
