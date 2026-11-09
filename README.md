@@ -8,56 +8,48 @@ app_file: app.py
 pinned: false
 ---
 
-# GEM SERIES BOT
+# GEM SERIES Automation
 
-Telegram bot for the GEM SERIES channel. It provides a /start welcome flow and can publish new posts from explicitly authorized Telegram source channels.
+Automates an authorized Telegram media workflow:
+1. Uses the configured Telegram user session to access the source channel.
+2. On startup, scans the configured historical date and archives one video/document post as a one-item test.
+3. Stores the forwarded post in the database channel and writes an archive marker to prevent repeating the historical import on restart.
+4. Publishes a text banner with a deep link in the destination channel.
+5. On button press, checks membership in the subscription channel and copies the archived message to the user.
+6. Monitors new source-channel posts and repeats the authorized archive-and-banner workflow.
 
-## Rights and access requirements
+Only use this system for media you own or are explicitly authorized to redistribute. The application does not bypass Telegram protected-content restrictions.
 
-- Add a source channel ID to AUTHORIZED_SOURCE_CHANNEL_IDS only when you own that channel or have explicit permission from its rights holder to republish its posts and media.
-- Add the bot as an administrator to each authorized source channel so Telegram sends it new channel_post updates.
-- Add the bot as an administrator to the destination channel with permission to post.
-- The bot processes new posts after it is added; it does not fetch old channel history.
-- Telegram users must press Start themselves before the bot can send them private messages.
+## Required Space Secrets
 
-## Hugging Face Space secrets
+- BOT_TOKEN
+- TELEGRAM_API_ID
+- TELEGRAM_API_HASH
+- TELETHON_SESSION (authorized Telethon StringSession; never commit or share it)
+- WEBHOOK_SECRET
+- PUBLIC_URL
 
-Set these under Space Settings → Variables and secrets → Secrets:
+## Optional Space Variables
 
-| Secret | Description |
-|---|---|
-| BOT_TOKEN | Token from BotFather |
-| DESTINATION_CHANNEL_ID | Numeric ID of your destination channel |
-| AUTHORIZED_SOURCE_CHANNEL_IDS | Comma-separated numeric IDs of channels you are authorized to republish from |
-| PUBLIC_URL | Public Space URL, e.g. https://name.hf.space |
-| WEBHOOK_SECRET | Long random secret used to validate Telegram webhooks |
-| OWNER_IDS | Comma-separated Telegram user IDs allowed to use owner-only status commands |
-| CHANNEL_URL | Public URL of the destination channel |
-| BOT_USERNAME | Username of your own bot, without @ (default: GEMSERIESTVBOT) |
+- BOT_USERNAME (default GEMSERIESTVBOT)
+- SOURCE_CHANNEL (default @GEM_SERIES_TJ)
+- DATABASE_CHANNEL (default @database_gem_series)
+- DESTINATION_CHANNEL (default @afsonaishab)
+- CHANNEL_URL (default https://t.me/afsonaishab)
+- SUBSCRIPTION_CHANNEL (default @tm_score)
+- SUBSCRIPTION_URL (default https://t.me/tm_score)
+- SPONSOR_BOT_URL (optional button only; default @FF_MARGEDAR_BOT)
+- INITIAL_SCAN_DATE (default 2026-11-09)
+- LOG_LEVEL (default INFO)
 
-Optional variable: LOG_LEVEL (default INFO).
+## Permissions
 
-Do not put real tokens or passwords in GitHub files.
+- The Telegram user account represented by TELETHON_SESSION must be able to read the source channel and post/forward into the database channel.
+- The bot must be administrator in the database channel (to copy posts to users) and destination channel (to publish banners).
+- The bot must be able to check members in the subscription channel; make it an administrator there for reliable membership checks.
+- Users must press Start themselves before the bot can message them.
+- The sponsor bot is optional and is not a subscription requirement.
 
-## Automatic GitHub deployment
+## Important runtime note
 
-Add HF_TOKEN and HF_SPACE_ID under GitHub repository Settings → Secrets and variables → Actions. HF_SPACE_ID must be your Hugging Face Space identifier in owner/name format. Every push to the main branch then deploys the repository to that Space.
-
-## Deploy
-
-This is a Gradio SDK Space. The Gradio interface is mounted with the Telegram webhook API. Once the Space is running and all secrets are set, it configures the Telegram webhook automatically.
-
-ZeroGPU supports Gradio Spaces, and this bot does not need GPU processing. Free Spaces can sleep or stop, so webhook delivery is not guaranteed to be uninterrupted 24/7. Use always-on hosting for reliable continuous delivery.
-
-## Commands
-
-- /start — welcome message and channel buttons
-- /help — bot information
-- /status — owner-only service status
-
-## Current behavior
-
-- Handles new posts received from configured, authorized source channels.
-- Copies media posts and preserves the original caption with a GEM SERIES header.
-- Sends text-only posts as formatted text.
-- Ignores channels not present in the authorized source allowlist.
+This Space uses a webhook for the bot and a Telethon user client for channel history/live updates. Free Hugging Face Spaces may sleep; uninterrupted monitoring requires an always-on host. The historical scan imports only one matching video/document post for the configured date. New source posts are monitored after startup.
