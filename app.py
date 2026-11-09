@@ -9,7 +9,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ChatMemberStatus
 from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from telethon import TelegramClient, events
@@ -70,13 +70,33 @@ def pub_keyboard(key):
         rows.append([InlineKeyboardButton(text="🎁 Боти шарик (ихтиёрӣ)",url=SPONSOR_BOT_URL)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def join_keyboard(key):
-    rows=[[InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE",url=SUBSCRIPTION_URL)],
-          [InlineKeyboardButton(text="✅ Санҷидани обуна",
-             url=f"https://t.me/{BOT_USERNAME}?start=post_{key[0]}_{key[1]}")]]
+def join_keyboard(key=None):
+    rows=[[InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE",url=SUBSCRIPTION_URL)]]
+    if key:
+        check_url=f"https://t.me/{BOT_USERNAME}?start=post_{key[0]}_{key[1]}"
+        rows.append([InlineKeyboardButton(text="✅ Санҷидани обуна",url=check_url)])
+    else:
+        rows.append([InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")])
     if SPONSOR_BOT_URL:
         rows.append([InlineKeyboardButton(text="🎁 Боти шарик (ихтиёрӣ)",url=SPONSOR_BOT_URL)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def welcome_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Канали GEM SERIES",url=DESTINATION_URL)],
+        [InlineKeyboardButton(text="📢 Обуна ба TM SCORE",url=SUBSCRIPTION_URL)],
+        [InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")]
+    ])
+
+@dp.callback_query(lambda query: query.data == "check_subscription")
+async def check_subscription_callback(query: CallbackQuery):
+    if await subscription_ok(query.from_user.id):
+        await query.answer("✅ Обуна тасдиқ шуд! Акнун метавонед аз бот истифода баред.",show_alert=True)
+        if query.message:
+            await query.message.answer("🎬 Хуш омадед! Обунаи шумо тасдиқ шуд. Вақте ки мавод интихоб мекунед, онро гирифта метавонед.",
+                                       reply_markup=welcome_keyboard())
+    else:
+        await query.answer("❌ Шумо ҳоло ба @tm_score обуна нестед. Аввал обуна шавед ва боз санҷед.",show_alert=True)
 
 async def process_source_message(msg, source_entity, source_id):
     if not msg or getattr(msg,"out",False) or not getattr(msg,"media",None):
@@ -176,10 +196,12 @@ async def start_handler(message:Message):
     payload=args[1] if len(args)>1 else ""
     match=re.fullmatch(r"post_(-?\d+)_([0-9]+)",payload)
     if not match:
-        await message.answer("🎬 Хуш омадед ба GEM SERIES!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-              [InlineKeyboardButton(text="📢 Канали GEM SERIES",url=DESTINATION_URL)],
-              [InlineKeyboardButton(text="📢 TM SCORE",url=SUBSCRIPTION_URL)]]))
+        if await subscription_ok(message.from_user.id):
+            await message.answer("🎬 Хуш омадед ба GEM SERIES! ✅ Обунаи шумо тасдиқ шуд.",
+                                 reply_markup=welcome_keyboard())
+        else:
+            await message.answer("🎬 Хуш омадед ба GEM SERIES! Барои истифода аввал ба канали TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
+                                 reply_markup=join_keyboard())
         return
     key=(int(match.group(1)),int(match.group(2)))
     if not await subscription_ok(message.from_user.id):
