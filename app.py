@@ -114,13 +114,20 @@ def welcome_keyboard():
 
 @dp.callback_query(lambda query: query.data == "check_subscription")
 async def check_subscription_callback(query: CallbackQuery):
-    if await subscription_ok(query.from_user.id):
-        await query.answer("✅ Обуна тасдиқ шуд! Акнун метавонед аз бот истифода баред.",show_alert=True)
+    # Telegram requires callback acknowledgement within a short time.
+    # Acknowledge immediately, before the network membership check.
+    await query.answer()
+    is_subscribed = await subscription_ok(query.from_user.id)
+    if is_subscribed:
         if query.message:
-            await query.message.answer("🎬 Хуш омадед! Обунаи шумо тасдиқ шуд. Вақте ки мавод интихоб мекунед, онро гирифта метавонед.",
-                                       reply_markup=welcome_keyboard())
+            await query.message.answer(
+                "🎬 Хуш омадед! Обунаи шумо тасдиқ шуд. Вақте ки мавод интихоб мекунед, онро гирифта метавонед.",
+                reply_markup=welcome_keyboard())
     else:
-        await query.answer("❌ Шумо ҳоло ба @tm_score обуна нестед. Аввал обуна шавед ва боз санҷед.",show_alert=True)
+        if query.message:
+            await query.message.answer(
+                "❌ Шумо ҳоло ба @tm_score обуна нестед. Аввал обуна шавед ва боз санҷед.",
+                reply_markup=join_keyboard())
 
 async def process_source_message(msg, source_entity, source_id):
     if not msg or getattr(msg,"out",False) or not getattr(msg,"media",None):
