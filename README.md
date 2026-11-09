@@ -33,10 +33,15 @@ Set these under Space Settings → Variables and secrets → Secrets:
 | WEBHOOK_SECRET | Long random secret used to validate Telegram webhooks |
 | OWNER_IDS | Comma-separated Telegram user IDs allowed to use owner-only status commands |
 | CHANNEL_URL | Public URL of the destination channel |
+| BOT_USERNAME | Username of your own bot, without @ (default: GEMSERIESTVBOT) |
 
 Optional variable: LOG_LEVEL (default INFO).
 
 Do not put real tokens or passwords in GitHub files.
+
+## Automatic GitHub deployment
+
+Add HF_TOKEN and HF_SPACE_ID under GitHub repository Settings → Secrets and variables → Actions. HF_SPACE_ID must be your Hugging Face Space identifier in owner/name format. Every push to the main branch then deploys the repository to that Space.
 
 ## Deploy
 
