@@ -3,7 +3,9 @@ title: GEM SERIES BOT
 emoji: 🎬
 colorFrom: purple
 colorTo: blue
-sdk: docker
+sdk: gradio
+sdk_version: "5.49.1"
+app_file: app.py
 app_port: 7860
 pinned: false
 ---
