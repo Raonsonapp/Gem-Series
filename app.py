@@ -31,16 +31,30 @@ def channel_value(*names, default):
     for name in names:
         value=os.getenv(name,"").strip()
         if value:
-            try:
+            if value.lstrip("-").isdigit():
                 return int(value)
-            except ValueError:
-                return value if value.startswith("@") else "@"+value
+            return value if value.startswith("@") else "@"+value
     return default
+
+def channel_id_list(value):
+    result=[]
+    for part in str(value).replace(";",",").split(","):
+        part=part.strip().strip("'\\"")
+        if not part:
+            continue
+        if part.startswith("@"):
+            part=part[1:].strip()
+        if part.lstrip("-").isdigit():
+            result.append(int(part))
+        else:
+            result.append("@"+part)
+    return result
 
 SOURCE_CHANNEL=channel_value("SOURCE_CHANNEL_ID","AUTHORIZED_SOURCE_CHANNEL_ID","SOURCE_CHANNEL",default="@GEM_SERIES_TJ")
 DATABASE_CHANNEL=channel_value("DATABASE_CHANNEL_ID","DATABASE_CHANNEL",default="@database_gem_series")
 DESTINATION_CHANNEL=channel_value("TARGET_CHANNEL_ID","DESTINATION_CHANNEL_ID","DESTINATION_CHANNEL",default="@afsonaishab")
-SUBSCRIPTION_CHANNEL=channel_value("SUBSCRIPTION_CHANNEL_ID","SUBSCRIPTION_CHANNEL",default="@tm_score")
+SUBSCRIPTION_CHANNELS=channel_id_list(os.getenv("SUBSCRIPTION_CHANNEL_IDS") or os.getenv("SUBSCRIPTION_CHANNEL_ID") or os.getenv("SUBSCRIPTION_CHANNEL") or "@tm_score")
+SUBSCRIPTION_CHANNEL=SUBSCRIPTION_CHANNELS[0] if SUBSCRIPTION_CHANNELS else "@tm_score"
 DESTINATION_URL=os.getenv("CHANNEL_URL","https://t.me/afsonaishab")
 SUBSCRIPTION_URL=os.getenv("SUBSCRIPTION_URL","https://t.me/tm_score")
 SPONSOR_BOT_URL=os.getenv("SPONSOR_BOT_URL","").strip()
@@ -193,12 +207,16 @@ async def start_mtproto_listener():
     asyncio.create_task(user_client.run_until_disconnected())
 
 async def subscription_ok(user_id):
-    try:
-        member=await bot.get_chat_member(SUBSCRIPTION_CHANNEL,user_id)
-        return member.status in {ChatMemberStatus.MEMBER,ChatMemberStatus.ADMINISTRATOR,ChatMemberStatus.CREATOR}
-    except Exception as exc:
-        log.error("Membership check failed for channel=%r user=%s: %s", SUBSCRIPTION_CHANNEL, user_id, exc)
-        return False
+    required={ChatMemberStatus.MEMBER,ChatMemberStatus.ADMINISTRATOR,ChatMemberStatus.CREATOR}
+    for channel in SUBSCRIPTION_CHANNELS:
+        try:
+            member=await bot.get_chat_member(channel,user_id)
+            if member.status not in required:
+                return False
+        except Exception as exc:
+            log.error("Membership check failed for channel=%r user=%s: %s",channel,user_id,exc)
+            return False
+    return True
 
 @dp.message(CommandStart())
 async def start_handler(message:Message):
@@ -242,8 +260,8 @@ async def lifespan(app:FastAPI):
         await bot.set_webhook(url=target_webhook,secret_token=WEBHOOK_SECRET,
                               allowed_updates=dp.resolve_used_update_types(),drop_pending_updates=False)
     log.info("Telegram webhook ready: %s", target_webhook)
-    log.info("Channel config: source=%r archive=%r target=%r subscription=%r",
-             SOURCE_CHANNEL,DATABASE_CHANNEL,DESTINATION_CHANNEL,SUBSCRIPTION_CHANNEL)
+    log.info("Channel config: source=%r archive=%r target=%r subscription_channels=%r",
+             SOURCE_CHANNEL,DATABASE_CHANNEL,DESTINATION_CHANNEL,SUBSCRIPTION_CHANNELS)
     log.info("GEM SERIES started; PostgreSQL connected.")
     try:
         yield
