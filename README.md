@@ -8,48 +8,43 @@ app_file: app.py
 pinned: false
 ---
 
-# GEM SERIES Automation
+# GEM SERIES
 
-Automates an authorized Telegram media workflow:
-1. Uses the configured Telegram user session to access the source channel.
-2. On startup, scans the configured historical date and archives one video/document post as a one-item test.
-3. Stores the forwarded post in the database channel and writes an archive marker to prevent repeating the historical import on restart.
-4. Publishes a text banner with a deep link in the destination channel.
-5. On button press, checks membership in the subscription channel and copies the archived message to the user.
-6. Monitors new source-channel posts and repeats the authorized archive-and-banner workflow.
+Sessionless mode: the app polls the public Telegram preview page at `https://t.me/s/<channel>`.
 
-Only use this system for media you own or are explicitly authorized to redistribute. The application does not bypass Telegram protected-content restrictions.
+## What it does
+- Checks the public channel page every `POLL_SECONDS` (default 180 seconds).
+- On startup, tries to publish one media post visible on `INITIAL_SCAN_DATE` (default 2026-11-09).
+- Stores the post caption and source URL in the configured database channel.
+- Publishes a banner with a link to the original public Telegram post.
+- Checks membership in the configured subscription channel when the user opens the bot deep link.
+- Sponsor bot button is optional only.
 
-## Required Space Secrets
+## Important limitation
+This mode does **not** download, copy, or redistribute the actual video from the source channel. It archives metadata and a link to the original post. Telegram's public preview page does not reliably expose the original media file. This avoids requiring a personal Telegram session and avoids bypassing protected-content restrictions.
 
+## Required Space secrets
 - BOT_TOKEN
-- TELEGRAM_API_ID
-- TELEGRAM_API_HASH
-- TELETHON_SESSION (authorized Telethon StringSession; never commit or share it)
 - WEBHOOK_SECRET
 - PUBLIC_URL
 
-## Optional Space Variables
-
+## Optional variables
 - BOT_USERNAME (default GEMSERIESTVBOT)
-- SOURCE_CHANNEL (default @GEM_SERIES_TJ)
+- SOURCE_CHANNEL (default GEM_SERIES_TJ)
 - DATABASE_CHANNEL (default @database_gem_series)
 - DESTINATION_CHANNEL (default @afsonaishab)
 - CHANNEL_URL (default https://t.me/afsonaishab)
 - SUBSCRIPTION_CHANNEL (default @tm_score)
 - SUBSCRIPTION_URL (default https://t.me/tm_score)
-- SPONSOR_BOT_URL (optional button only; default @FF_MARGEDAR_BOT)
+- SPONSOR_BOT_URL (optional; default https://t.me/FF_MARGEDAR_BOT)
 - INITIAL_SCAN_DATE (default 2026-11-09)
-- LOG_LEVEL (default INFO)
+- POLL_SECONDS (default 180; minimum 60)
+- DB_PATH (default /data/gem_series.sqlite3)
 
-## Permissions
+## Telegram permissions
+- Bot must be admin in database and destination channels.
+- Bot must be able to check members in the subscription channel; admin rights are recommended.
+- Users must start the bot themselves before the bot can send them messages.
 
-- The Telegram user account represented by TELETHON_SESSION must be able to read the source channel and post/forward into the database channel.
-- The bot must be administrator in the database channel (to copy posts to users) and destination channel (to publish banners).
-- The bot must be able to check members in the subscription channel; make it an administrator there for reliable membership checks.
-- Users must press Start themselves before the bot can message them.
-- The sponsor bot is optional and is not a subscription requirement.
-
-## Important runtime note
-
-This Space uses a webhook for the bot and a Telethon user client for channel history/live updates. Free Hugging Face Spaces may sleep; uninterrupted monitoring requires an always-on host. The historical scan imports only one matching video/document post for the configured date. New source posts are monitored after startup.
+## Hosting
+Free Hugging Face Spaces can sleep or restart. Polling is best-effort and is not guaranteed to run 24/7 on a sleeping instance. Persistent storage should be enabled if SQLite history must survive restarts.
