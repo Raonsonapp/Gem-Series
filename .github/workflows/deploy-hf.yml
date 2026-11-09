@@ -17,11 +17,11 @@ jobs:
       - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_SPACE_ID: ${{ secrets.HF_SPACE_ID }}
+          HF_SPACE_ID: Mahmadmurodov/GEM_SERIES
         run: |
           set -euo pipefail
-          if [ -z "${HF_TOKEN:-}" ] || [ -z "${HF_SPACE_ID:-}" ]; then
-            echo "Set HF_TOKEN and HF_SPACE_ID in GitHub repository Actions secrets."
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "Missing HF_TOKEN. Add a Hugging Face token with write access in GitHub Actions secrets."
             exit 1
           fi
           git remote add huggingface "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}"
