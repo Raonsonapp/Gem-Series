@@ -39,7 +39,7 @@ def channel_value(*names, default):
 def channel_id_list(value):
     result=[]
     for part in str(value).replace(";",",").split(","):
-        part=part.strip().strip("'\\"")
+        part=part.strip().strip("'").strip('"')
         if not part:
             continue
         if part.startswith("@"):
