@@ -23,7 +23,7 @@ AUTHORIZED_SOURCE_CHANNEL_IDS = {
 }
 PUBLIC_URL = os.environ["PUBLIC_URL"].rstrip("/")
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
-CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/GEM_SERIES_TJ")
+CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/afsonaishab")
 OWNER_IDS = {int(v.strip()) for v in os.getenv("OWNER_IDS", "").split(",") if v.strip()}
 
 bot = Bot(BOT_TOKEN)
