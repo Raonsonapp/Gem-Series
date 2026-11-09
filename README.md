@@ -3,48 +3,52 @@ title: GEM SERIES BOT
 emoji: 🎬
 colorFrom: purple
 colorTo: blue
-sdk: gradio
-app_file: app.py
+sdk: docker
+app_port: 7860
 pinned: false
 ---
 
 # GEM SERIES
 
-Sessionless mode: the app polls the public Telegram preview page at `https://t.me/s/<channel>`.
+Automatic Telegram channel-post importer using the official Telegram Bot API. No Telethon user session is used.
 
-## What it does
-- Checks the public channel page every `POLL_SECONDS` (default 180 seconds).
-- On startup, tries to publish one media post visible on `INITIAL_SCAN_DATE` (default 2026-11-09).
-- Stores the post caption and source URL in the configured database channel.
-- Publishes a banner with a link to the original public Telegram post.
-- Checks membership in the configured subscription channel when the user opens the bot deep link.
-- Sponsor bot button is optional only.
-
-## Important limitation
-This mode does **not** download, copy, or redistribute the actual video from the source channel. It archives metadata and a link to the original post. Telegram's public preview page does not reliably expose the original media file. This avoids requiring a personal Telegram session and avoids bypassing protected-content restrictions.
+## Automatic workflow
+1. The bot receives each new post from the configured source channel.
+2. It copies the original post (video, document, photo, or text) into the private database channel.
+3. It copies that stored message into the public GEM SERIES channel.
+4. The post includes a bot deep link. After the user joins `@tm_score`, the bot sends the stored media to the user.
+5. The optional partner bot button is informational only and is not a required membership gate.
 
 ## Required Space secrets
-- BOT_TOKEN
-- WEBHOOK_SECRET
-- PUBLIC_URL
+- `BOT_TOKEN`
+- `WEBHOOK_SECRET`
+- `PUBLIC_URL` — full HTTPS URL of this Space, without a trailing slash.
 
-## Optional variables
-- BOT_USERNAME (default GEMSERIESTVBOT)
-- SOURCE_CHANNEL (default GEM_SERIES_TJ)
-- DATABASE_CHANNEL (default @database_gem_series)
-- DESTINATION_CHANNEL (default @afsonaishab)
-- CHANNEL_URL (default https://t.me/afsonaishab)
-- SUBSCRIPTION_CHANNEL (default @tm_score)
-- SUBSCRIPTION_URL (default https://t.me/tm_score)
-- SPONSOR_BOT_URL (optional; default https://t.me/FF_MARGEDAR_BOT)
-- INITIAL_SCAN_DATE (default 2026-11-09)
-- POLL_SECONDS (default 180; minimum 60)
-- DB_PATH (default /data/gem_series.sqlite3)
+## Channel configuration
+Defaults:
+- Source: `@GEM_SERIES_TJ`
+- Database: `@database_gem_series`
+- Publishing: `@afsonaishab`
+- Membership check: `@tm_score`
+- Optional partner: `@FF_MARGEDAR_BOT`
 
-## Telegram permissions
-- Bot must be admin in database and destination channels.
-- Bot must be able to check members in the subscription channel; admin rights are recommended.
-- Users must start the bot themselves before the bot can send them messages.
+Optional environment variables:
+- `BOT_USERNAME`
+- `SOURCE_CHANNEL`
+- `DATABASE_CHANNEL`
+- `DESTINATION_CHANNEL`
+- `CHANNEL_URL`
+- `SUBSCRIPTION_CHANNEL`
+- `SUBSCRIPTION_URL`
+- `SPONSOR_BOT_URL` (set empty to hide the optional partner button)
+- `DB_PATH` (default `/data/gem_series.sqlite3`)
+
+## Telegram permissions — important
+- The bot **must be an administrator in the source channel** to receive new channel posts through the Bot API.
+- The bot must be an administrator in `@database_gem_series` and `@afsonaishab`, with permission to post messages.
+- The bot must be able to check members of `@tm_score`; make it an administrator there too.
+- If the source channel owner cannot add the bot as an administrator, this Bot API listener cannot read that channel. A user-account MTProto listener would then be needed; this build intentionally does not request or collect Telegram login codes or account sessions.
+- The Bot API cannot backfill old source-channel history. It automatically handles new posts after the bot is added and the webhook is active.
 
 ## Hosting
-Free Hugging Face Spaces can sleep or restart. Polling is best-effort and is not guaranteed to run 24/7 on a sleeping instance. Persistent storage should be enabled if SQLite history must survive restarts.
+The Space uses the included Dockerfile and listens on port 7860. Free hosting can sleep or restart; use persistent storage for the SQLite database and an always-on host if continuous 24/7 monitoring is required.
