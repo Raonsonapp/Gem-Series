@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon import utils
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -127,7 +128,7 @@ async def import_source_message(event):
 
 async def import_one_latest_for_test(source_entity):
     """Import exactly one latest media post as an initial smoke test."""
-    source_id=int(getattr(source_entity,"id"))
+    source_id=int(utils.get_peer_id(source_entity))
     async for msg in user_client.iter_messages(source_entity,limit=30):
         if getattr(msg,"media",None) and not getattr(msg,"out",False):
             done=await process_source_message(msg,source_entity,source_id)
