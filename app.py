@@ -1,26 +1,23 @@
-import asyncio
-import html
 import logging
 import os
 import re
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import datetime, time, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-import gradio as gr
-import httpx
-from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ChatMemberStatus, ParseMode
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from aiogram.types import (
+    InlineKeyboardButton, InlineKeyboardMarkup, Message, Update,
+)
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 log = logging.getLogger("gem-series")
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -28,161 +25,141 @@ WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 PUBLIC_URL = os.environ["PUBLIC_URL"].rstrip("/")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "GEMSERIESTVBOT").lstrip("@")
 
-SOURCE_CHANNEL = os.getenv("SOURCE_CHANNEL", "@GEM_SERIES_TJ").lstrip("@")
+SOURCE_CHANNEL = os.getenv("SOURCE_CHANNEL", "@GEM_SERIES_TJ")
 DATABASE_CHANNEL = os.getenv("DATABASE_CHANNEL", "@database_gem_series")
 DESTINATION_CHANNEL = os.getenv("DESTINATION_CHANNEL", "@afsonaishab")
 SUBSCRIPTION_CHANNEL = os.getenv("SUBSCRIPTION_CHANNEL", "@tm_score")
 DESTINATION_URL = os.getenv("CHANNEL_URL", "https://t.me/afsonaishab")
 SUBSCRIPTION_URL = os.getenv("SUBSCRIPTION_URL", "https://t.me/tm_score")
-SPONSOR_BOT_URL = os.getenv("SPONSOR_BOT_URL", "https://t.me/FF_MARGEDAR_BOT")
-INITIAL_SCAN_DATE = os.getenv("INITIAL_SCAN_DATE", "2026-11-09")
-POLL_SECONDS = max(60, int(os.getenv("POLL_SECONDS", "180")))
+SPONSOR_BOT_URL = os.getenv("SPONSOR_BOT_URL", "https://t.me/FF_MARGEDAR_BOT").strip()
 DB_PATH = os.getenv("DB_PATH", "/data/gem_series.sqlite3")
-LOCAL_TZ = ZoneInfo("Asia/Dushanbe")
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
-http = httpx.AsyncClient(timeout=25, follow_redirects=True,
-                         headers={"User-Agent": "Mozilla/5.0 (compatible; GEMSeriesBot/1.0)"})
-poll_task = None
 
 
 def db():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("""CREATE TABLE IF NOT EXISTS posts (
-        source_post TEXT PRIMARY KEY, source_url TEXT NOT NULL,
-        post_date TEXT NOT NULL, caption TEXT NOT NULL,
-        database_message_id INTEGER, published INTEGER NOT NULL DEFAULT 0
-    )""")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS posts (
+            source_post TEXT PRIMARY KEY,
+            source_url TEXT NOT NULL,
+            post_date TEXT NOT NULL,
+            caption TEXT NOT NULL,
+            database_message_id INTEGER,
+            published INTEGER NOT NULL DEFAULT 0
+        )
+    """)
     conn.commit()
     return conn
 
 
-def source_url(post_id: str) -> str:
-    return f"https://t.me/{SOURCE_CHANNEL}/{post_id}"
+def post_key(message: Message) -> str:
+    return f"{message.chat.id}:{message.message_id}"
 
 
-def post_keyboard(post_id: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="▶️ Кушодани пости аслӣ", url=source_url(post_id))],
+def source_link(message: Message) -> str:
+    username = message.chat.username or SOURCE_CHANNEL.lstrip("@")
+    return f"https://t.me/{username}/{message.message_id}"
+
+
+def publication_keyboard(key: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text="▶️ Тамошо / гирифтани қисм",
+            url=f"https://t.me/{BOT_USERNAME}?start=post_{key.replace(':', '_')}",
+        )],
         [InlineKeyboardButton(text="📢 Канали мо", url=DESTINATION_URL)],
-    ])
+    ]
+    if SUBSCRIPTION_URL:
+        rows.append([InlineKeyboardButton(text="📢 Обуна ба TM SCORE", url=SUBSCRIPTION_URL)])
+    if SPONSOR_BOT_URL:
+        rows.append([InlineKeyboardButton(text="🎁 Боти шарик (ихтиёрӣ)", url=SPONSOR_BOT_URL)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def join_keyboard(post_id: str):
+def join_keyboard(key: str) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE", url=SUBSCRIPTION_URL)],
-        [InlineKeyboardButton(text="✅ Санҷидани обуна",
-                              url=f"https://t.me/{BOT_USERNAME}?start=post_{post_id}")],
+        [InlineKeyboardButton(
+            text="✅ Санҷидани обуна",
+            url=f"https://t.me/{BOT_USERNAME}?start=post_{key.replace(':', '_')}",
+        )],
     ]
     if SPONSOR_BOT_URL:
         rows.append([InlineKeyboardButton(text="🎁 Боти шарик (ихтиёрӣ)", url=SPONSOR_BOT_URL)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def scrape_public_posts():
-    url = f"https://t.me/s/{SOURCE_CHANNEL}"
-    response = await http.get(url)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    posts = []
-    for node in soup.select(".tgme_widget_message_wrap"):
-        message = node.select_one(".tgme_widget_message")
-        if not message:
-            continue
-        data_post = message.get("data-post", "")
-        match = re.search(r"/(\\d+)$", data_post)
-        if not match:
-            continue
-        post_id = match.group(1)
-        date_node = node.select_one("time[datetime]")
-        date_text = date_node.get("datetime", "") if date_node else ""
-        text_node = node.select_one(".tgme_widget_message_text")
-        caption = text_node.get_text("\\n", strip=True) if text_node else ""
-        has_media = bool(node.select_one(".tgme_widget_message_photo, .tgme_widget_message_video, .tgme_widget_message_document"))
-        posts.append({"id": post_id, "date": date_text, "caption": caption, "has_media": has_media})
-    return posts
+def is_source(message: Message) -> bool:
+    expected = SOURCE_CHANNEL.lstrip("@").lower()
+    actual = (message.chat.username or "").lower()
+    return actual == expected
 
 
-async def save_and_publish(post, historical=False):
-    post_id = post["id"]
-    url = source_url(post_id)
-    caption = (post["caption"] or "").strip()
+async def import_and_publish(message: Message):
+    if not is_source(message):
+        return
+
+    key = post_key(message)
+    url = source_link(message)
+    caption = (message.text or message.caption or "").strip()
     conn = db()
     try:
-        existing = conn.execute("SELECT published FROM posts WHERE source_post=?", (post_id,)).fetchone()
-        if existing and existing[0]:
+        row = conn.execute(
+            "SELECT database_message_id, published FROM posts WHERE source_post=?",
+            (key,),
+        ).fetchone()
+        if row and row[1]:
             return
-        conn.execute("""INSERT OR IGNORE INTO posts
-            (source_post, source_url, post_date, caption, published)
-            VALUES (?, ?, ?, ?, 0)""",
-            (post_id, url, post["date"], caption))
-        conn.commit()
 
-        record_text = (
-            "🎬 GEM SERIES — сабти пости манбаъ\\n\\n"
-            + (caption[:2500] + "\\n\\n" if caption else "")
-            + f"Пости аслӣ: {url}\\n"
-            + "Эзоҳ: ин сабт танҳо маълумот ва пайванди манбаъро нигоҳ медорад; "
-              "худи видеоро аз канали дигар нусхабардорӣ намекунад."
-        )
-        stored = await bot.send_message(DATABASE_CHANNEL, record_text, disable_web_page_preview=True)
-        conn.execute("UPDATE posts SET database_message_id=? WHERE source_post=?",
-                     (stored.message_id, post_id))
-        conn.commit()
+        if row and row[0]:
+            stored_id = row[0]
+        else:
+            stored = await bot.copy_message(
+                chat_id=DATABASE_CHANNEL,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+            )
+            stored_id = stored.message_id
+            conn.execute(
+                """INSERT OR REPLACE INTO posts
+                   (source_post, source_url, post_date, caption, database_message_id, published)
+                   VALUES (?, ?, ?, ?, ?, 0)""",
+                (key, url, message.date.isoformat(), caption, stored_id),
+            )
+            conn.commit()
 
-        banner = (
-            "🎬 <b>GEM SERIES</b>\\n\\n"
-            + (html.escape(caption[:650]) + "\\n\\n" if caption else "")
-            + "Пости нав дар манбаъ пайдо шуд. Барои кушодан тугмаро пахш кунед."
+        await bot.copy_message(
+            chat_id=DESTINATION_CHANNEL,
+            from_chat_id=DATABASE_CHANNEL,
+            message_id=stored_id,
+            reply_markup=publication_keyboard(key),
         )
-        await bot.send_message(DESTINATION_CHANNEL, banner, parse_mode=ParseMode.HTML,
-                               reply_markup=post_keyboard(post_id))
-        conn.execute("UPDATE posts SET published=1 WHERE source_post=?", (post_id,))
+        conn.execute("UPDATE posts SET published=1 WHERE source_post=?", (key,))
         conn.commit()
-        log.info("Published public post %s (historical=%s)", post_id, historical)
+        log.info("Imported and published source post %s", key)
+    except Exception:
+        log.exception("Could not import source post %s", key)
+        raise
     finally:
         conn.close()
 
 
-async def scan_public_channel():
-    try:
-        posts = await scrape_public_posts()
-        if not posts:
-            log.warning("No public posts found; channel may be private or page markup changed")
-            return
-        target = datetime.strptime(INITIAL_SCAN_DATE, "%Y-%m-%d").date()
-        selected = None
-        for post in posts:
-            try:
-                stamp = datetime.fromisoformat(post["date"].replace("Z", "+00:00")).astimezone(LOCAL_TZ)
-            except Exception:
-                continue
-            if stamp.date() == target and post["has_media"]:
-                selected = post
-                break
-        if selected:
-            await save_and_publish(selected, historical=True)
-        else:
-            log.info("No media post for initial test date %s in visible public page", target)
-        for post in reversed(posts):
-            await save_and_publish(post)
-    except Exception:
-        log.exception("Public channel scan failed")
-
-
-async def polling_loop():
-    while True:
-        await scan_public_channel()
-        await asyncio.sleep(POLL_SECONDS)
+@dp.channel_post()
+async def source_channel_post(message: Message):
+    await import_and_publish(message)
 
 
 async def subscription_ok(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(SUBSCRIPTION_CHANNEL, user_id)
-        return member.status in {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR,
-                                 ChatMemberStatus.CREATOR}
+        return member.status in {
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.CREATOR,
+        }
     except Exception:
         log.exception("Subscription check failed for user %s", user_id)
         return False
@@ -192,84 +169,105 @@ async def subscription_ok(user_id: int) -> bool:
 async def start_handler(message: Message):
     args = (message.text or "").split(maxsplit=1)
     payload = args[1].strip() if len(args) > 1 else ""
-    if payload.startswith("post_") and payload[5:].isdigit():
-        post_id = payload[5:]
-        if not await subscription_ok(message.from_user.id):
-            await message.answer("🔒 Аввал ба канали TM SCORE обуна шавед ва баъд санҷишро пахш кунед.",
-                                 reply_markup=join_keyboard(post_id))
+
+    if payload.startswith("post_"):
+        key = payload[5:].replace("_", ":", 1)
+        if not re.fullmatch(r"-?\d+:\d+", key):
+            await message.answer("Пайванди нодуруст аст.")
             return
-        await message.answer("✅ Обуна тасдиқ шуд. Пости аслӣ аз ин ҷо дастрас аст:",
-                             reply_markup=post_keyboard(post_id))
+
+        if not await subscription_ok(message.from_user.id):
+            await message.answer(
+                "🔒 Барои гирифтани видео аввал ба канали TM SCORE обуна шавед.",
+                reply_markup=join_keyboard(key),
+            )
+            return
+
+        conn = db()
+        try:
+            row = conn.execute(
+                "SELECT database_message_id FROM posts WHERE source_post=? AND published=1",
+                (key,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if not row:
+            await message.answer("Ин видео ҳоло дар база ёфт нашуд.")
+            return
+
+        await bot.copy_message(
+            chat_id=message.chat.id,
+            from_chat_id=DATABASE_CHANNEL,
+            message_id=row[0],
+        )
         return
+
     await message.answer(
-        "🎬 Хуш омадед ба GEM SERIES!\\n\\n"
-        "Постҳои нав аз саҳифаи оммавии манбаъ санҷида мешаванд. "
-        "Барои гирифтани пайванд аз тугмаи дохили канали мо истифода баред.",
+        "🎬 Хуш омадед ба GEM SERIES!\n\n"
+        "Қисмҳои нав ба таври автоматӣ ворид ва нашр мешаванд.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Канали GEM SERIES", url=DESTINATION_URL)],
-            [InlineKeyboardButton(text="🎁 Боти шарик (ихтиёрӣ)", url=SPONSOR_BOT_URL)],
-        ]))
+            [InlineKeyboardButton(text="📢 TM SCORE", url=SUBSCRIPTION_URL)],
+        ]),
+    )
 
 
 @asynccontextmanager
-async def lifespan(api: FastAPI):
-    global poll_task
-    await bot.set_webhook(url=f"{PUBLIC_URL}/telegram/webhook",
-                          secret_token=WEBHOOK_SECRET,
-                          allowed_updates=dp.resolve_used_update_types(),
-                          drop_pending_updates=False)
+async def lifespan(app: FastAPI):
     db().close()
-    await scan_public_channel()
-    poll_task = asyncio.create_task(polling_loop())
-    log.info("GEM SERIES started in sessionless public-channel mode")
+    await bot.set_webhook(
+        url=f"{PUBLIC_URL}/telegram/webhook",
+        secret_token=WEBHOOK_SECRET,
+        allowed_updates=dp.resolve_used_update_types(),
+        drop_pending_updates=False,
+    )
+    log.info("GEM SERIES Bot API channel-post listener started (no Telethon session)")
     try:
         yield
     finally:
-        if poll_task:
-            poll_task.cancel()
         await bot.delete_webhook()
         await bot.session.close()
-        await http.aclose()
 
 
-api = FastAPI(title="GEM SERIES Automation", lifespan=lifespan)
+app = FastAPI(title="GEM SERIES Automation", lifespan=lifespan)
 
 
-@api.get("/health")
+@app.get("/")
+async def root():
+    return {"service": "GEM SERIES", "mode": "telegram_bot_api_channel_listener"}
+
+
+@app.get("/health")
 async def health():
     conn = db()
     try:
         count = conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
     finally:
         conn.close()
-    return {"status": "healthy", "mode": "public_page_polling",
-            "source": f"@{SOURCE_CHANNEL}", "posts_seen": count,
-            "poll_seconds": POLL_SECONDS,
-            "note": "Stores post metadata and source links, not third-party video files."}
+    return {
+        "status": "healthy",
+        "mode": "telegram_bot_api_channel_listener",
+        "source": SOURCE_CHANNEL,
+        "database": DATABASE_CHANNEL,
+        "destination": DESTINATION_CHANNEL,
+        "posts_seen": count,
+        "telethon_session_required": False,
+        "requirement": "The bot must be an administrator in the source channel to receive new channel posts.",
+    }
 
 
-@api.post("/telegram/webhook")
-async def telegram_webhook(request: Request,
-                           x_telegram_bot_api_secret_token: str | None = Header(default=None)):
+@app.post("/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+):
     if x_telegram_bot_api_secret_token != WEBHOOK_SECRET:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
     update = Update.model_validate(await request.json(), context={"bot": bot})
     await dp.feed_update(bot, update)
     return JSONResponse({"ok": True})
 
-
-with gr.Blocks(title="GEM SERIES Automation") as demo:
-    gr.Markdown("# 🎬 GEM SERIES — Sessionless Automation")
-    gr.Markdown(
-        f"**Манбаъ:** @{SOURCE_CHANNEL}  \n"
-        f"**База:** {DATABASE_CHANNEL}  \n"
-        f"**Канали нашр:** {DESTINATION_CHANNEL}  \n"
-        f"**Санҷиши обуна:** {SUBSCRIPTION_CHANNEL}  \n"
-        "**Усул:** хондани саҳифаи оммавӣ; нигоҳдории маълумот ва пайванди пост. "
-        "Худи видеои канал нусхабардорӣ намешавад."
-    )
-
-app = gr.mount_gradio_app(api, demo, path="/")
 
 if __name__ == "__main__":
     import uvicorn
