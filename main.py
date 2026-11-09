@@ -29,9 +29,12 @@ OWNER_IDS = {int(v.strip()) for v in os.getenv("OWNER_IDS", "").split(",") if v.
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
+BOT_USERNAME = os.getenv("BOT_USERNAME", "GEMSERIESTVBOT").lstrip("@")
+
 def welcome_keyboard() -> InlineKeyboardMarkup:
+    bot_url = f"https://t.me/{BOT_USERNAME}?start=channel"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎬 Тамошои филмҳо", url=CHANNEL_URL)],
+        [InlineKeyboardButton(text="🤖 Оғози GEM SERIES BOT", url=bot_url)],
         [InlineKeyboardButton(text="📢 Канали мо", url=CHANNEL_URL)],
     ])
 
