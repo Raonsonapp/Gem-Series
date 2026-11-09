@@ -3,8 +3,8 @@ title: GEM SERIES BOT
 emoji: 🎬
 colorFrom: purple
 colorTo: blue
-sdk: docker
-app_port: 7860
+sdk: gradio
+app_file: app.py
 pinned: false
 ---
 
@@ -45,9 +45,9 @@ Add HF_TOKEN and HF_SPACE_ID under GitHub repository Settings → Secrets and va
 
 ## Deploy
 
-This is a Docker Space listening on port 7860. Once the Space is running and all secrets are set, it configures the Telegram webhook automatically.
+This is a Gradio SDK Space. The Gradio interface is mounted with the Telegram webhook API. Once the Space is running and all secrets are set, it configures the Telegram webhook automatically.
 
-Free Spaces may sleep or stop, so they do not guarantee uninterrupted 24/7 delivery. Use an always-on server plan for continuous operation.
+ZeroGPU supports Gradio Spaces, and this bot does not need GPU processing. Free Spaces can sleep or stop, so webhook delivery is not guaranteed to be uninterrupted 24/7. Use always-on hosting for reliable continuous delivery.
 
 ## Commands
 
