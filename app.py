@@ -1,3 +1,4 @@
+import spaces
 import asyncio
 import logging
 import os
@@ -247,6 +248,11 @@ async def telegram_webhook(request:Request,
 # onto the existing FastAPI application so the Telegram webhook remains available.
 import gradio as gr
 
+@spaces.GPU(duration=30)
+def zerogpu_probe():
+    # Minimal registered ZeroGPU handler; this bot itself does not need GPU compute.
+    return "ZeroGPU handler registered. GEM SERIES uses CPU for Telegram tasks."
+
 async def gradio_status():
     try:
         data = await health()
@@ -259,10 +265,23 @@ with gr.Blocks(title="GEM SERIES") as demo:
     status_box = gr.Markdown("Барои дидани ҳолати сервер тугмаро пахш кунед.")
     refresh = gr.Button("🔄 Санҷидани сервер", variant="primary")
     refresh.click(fn=gradio_status, outputs=status_box)
+    gpu_check = gr.Button("Санҷиши ZeroGPU")
+    gpu_result = gr.Markdown()
+    gpu_check.click(fn=zerogpu_probe, outputs=gpu_result)
     demo.load(fn=gradio_status, outputs=status_box)
 
 app = gr.mount_gradio_app(app, demo, path="/")
 
+def report_zerogpu_startup():
+    """Report registered @spaces.GPU handlers when using a mounted Gradio app."""
+    try:
+        from spaces.zero import startup as zero_startup
+        zero_startup()
+        log.info("ZeroGPU startup report sent.")
+    except ImportError:
+        log.info("Non-ZeroGPU runtime; skipping ZeroGPU startup report.")
+
 if __name__=="__main__":
+ report_zerogpu_startup()
  import uvicorn
  uvicorn.run(app,host="0.0.0.0",port=int(os.getenv("PORT","7860")))
