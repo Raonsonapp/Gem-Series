@@ -218,7 +218,7 @@ async def lifespan(app:FastAPI):
 
 app=FastAPI(title="GEM SERIES Bot",lifespan=lifespan)
 
-@app.get("/")
+@app.get("/api/status")
 async def root():
     return {"service":"GEM SERIES","status":"ok"}
 
@@ -241,6 +241,27 @@ async def telegram_webhook(request:Request,
     update=Update.model_validate(await request.json(),context={"bot":bot})
     await dp.feed_update(bot,update)
     return JSONResponse({"ok":True})
+
+
+# Hugging Face ZeroGPU requires the Gradio SDK. Mount the Gradio interface
+# onto the existing FastAPI application so the Telegram webhook remains available.
+import gradio as gr
+
+async def gradio_status():
+    try:
+        data = await health()
+        return "\n".join(f"- **{k}:** {v}" for k, v in data.items())
+    except Exception as exc:
+        return f"Status check failed: {type(exc).__name__}: {exc}"
+
+with gr.Blocks(title="GEM SERIES") as demo:
+    gr.Markdown("# 🎬 GEM SERIES\nПанели санҷиши бот")
+    status_box = gr.Markdown("Барои дидани ҳолати сервер тугмаро пахш кунед.")
+    refresh = gr.Button("🔄 Санҷидани сервер", variant="primary")
+    refresh.click(fn=gradio_status, outputs=status_box)
+    demo.load(fn=gradio_status, outputs=status_box)
+
+app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__=="__main__":
  import uvicorn
