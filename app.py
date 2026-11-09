@@ -27,7 +27,9 @@ log = logging.getLogger("gem-series")
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
-TELETHON_SESSION = os.environ["TELETHON_SESSION"]
+TELETHON_SESSION = os.getenv("TELETHON_SESSION") or os.getenv("TELEGRAM_SESSION")
+if not TELETHON_SESSION:
+    raise RuntimeError("Set TELETHON_SESSION (or TELEGRAM_SESSION) as a Space secret.")
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 PUBLIC_URL = os.environ["PUBLIC_URL"].rstrip("/")
 BOT_USERNAME = os.getenv("BOT_USERNAME", "GEMSERIESTVBOT").lstrip("@")
