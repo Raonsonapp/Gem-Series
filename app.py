@@ -76,33 +76,30 @@ def join_keyboard(key):
         rows.append([InlineKeyboardButton(text="🎁 Боти шарик (ихтиёрӣ)",url=SPONSOR_BOT_URL)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-async def import_source_message(event):
-    msg=event.message
-    if not msg or msg.out or not msg.media and not msg.message:
-        return
-    chat=await event.get_chat()
-    username=(getattr(chat,"username",None) or "").lower()
-    if username != SOURCE_CHANNEL.lower():
-        return
-    source_id=int(event.chat_id)
+async def process_source_message(msg, source_entity, source_id):
+    if not msg or getattr(msg,"out",False) or not getattr(msg,"media",None):
+        return False
     source_mid=int(msg.id)
     exists=await pool.fetchrow(
       "SELECT status FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
       source_id,source_mid)
     if exists and exists["status"]=="published":
-        return
+        return False
     await pool.execute("""
       INSERT INTO gem_posts(source_chat_id,source_message_id,source_date,caption,status)
       VALUES($1,$2,$3,$4,'processing')
-      ON CONFLICT(source_chat_id,source_message_id) DO NOTHING
+      ON CONFLICT(source_chat_id,source_message_id) DO UPDATE
+      SET status='processing', caption=EXCLUDED.caption
+      WHERE gem_posts.status <> 'published'
     """,source_id,source_mid,msg.date,(msg.message or ""))
     try:
-        # Copy the authorized source media with the user-account listener into the private archive.
-        saved=await user_client.send_file(
-            DATABASE_CHANNEL, msg.media, caption=msg.message or "",
-            force_document=False, link_preview=False
-        ) if msg.media else await user_client.send_message(DATABASE_CHANNEL,msg.message or "")
-        archive_id=int(saved.id)
+        # Forward the authorized source post into the archive as the signed-in account.
+        archived=await user_client.forward_messages(
+            entity=DATABASE_CHANNEL, messages=msg, from_peer=source_entity
+        )
+        if isinstance(archived,list):
+            archived=archived[0]
+        archive_id=int(archived.id)
         sent=await bot.copy_message(
             chat_id=DESTINATION_CHANNEL,from_chat_id=DATABASE_CHANNEL,
             message_id=archive_id,reply_markup=pub_keyboard((source_id,source_mid)))
@@ -110,13 +107,36 @@ async def import_source_message(event):
           UPDATE gem_posts SET database_message_id=$3,published_message_id=$4,status='published'
           WHERE source_chat_id=$1 AND source_message_id=$2
         """,source_id,source_mid,archive_id,sent.message_id)
-        log.info("Imported %s/%s",source_id,source_mid)
-    except Exception as exc:
+        log.info("Published source post %s/%s",source_id,source_mid)
+        return True
+    except Exception:
         await pool.execute("""
-          UPDATE gem_posts SET status='error',caption=$3
-          WHERE source_chat_id=$1 AND source_message_id=$2
-        """,source_id,source_mid,(msg.message or "")[:3500])
-        log.exception("Import failed: %s",exc)
+          UPDATE gem_posts SET status='error'
+          WHERE source_chat_id=$1 AND source_message_id=$2 AND status <> 'published'
+        """,source_id,source_mid)
+        log.exception("Import failed for %s/%s",source_id,source_mid)
+        return False
+
+async def import_source_message(event):
+    try:
+        source_entity=await user_client.get_entity(SOURCE_CHANNEL)
+        source_id=int(event.chat_id)
+        await process_source_message(event.message,source_entity,source_id)
+    except Exception:
+        log.exception("Could not process incoming source post")
+
+async def import_one_latest_for_test(source_entity):
+    """Import exactly one latest media post as an initial smoke test."""
+    source_id=int(getattr(source_entity,"id"))
+    async for msg in user_client.iter_messages(source_entity,limit=30):
+        if getattr(msg,"media",None) and not getattr(msg,"out",False):
+            done=await process_source_message(msg,source_entity,source_id)
+            if done:
+                log.info("Initial one-post test import completed.")
+            else:
+                log.info("Latest media was already imported or import failed; no duplicate sent.")
+            return
+    log.warning("No media post found in the latest 30 source messages.")
 
 async def start_mtproto_listener():
     global user_client
@@ -132,8 +152,12 @@ async def start_mtproto_listener():
         await user_client.disconnect()
         user_client=None
         return
-    user_client.add_event_handler(import_source_message,events.NewMessage(chats=SOURCE_CHANNEL))
+    source_entity=await user_client.get_entity(SOURCE_CHANNEL)
+    user_client.add_event_handler(import_source_message,events.NewMessage(chats=source_entity))
     log.info("MTProto listener connected for source @%s",SOURCE_CHANNEL)
+    # First run: import at most one latest media post for a controlled test.
+    if os.getenv("INITIAL_IMPORT_ONE","true").lower() in {"1","true","yes"}:
+        await import_one_latest_for_test(source_entity)
     asyncio.create_task(user_client.run_until_disconnected())
 
 async def subscription_ok(user_id):
