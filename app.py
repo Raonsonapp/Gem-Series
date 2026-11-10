@@ -228,16 +228,16 @@ def welcome_keyboard():
 
 async def send_latest_video(chat_id):
     row=await pool.fetchrow("""
-      SELECT database_message_id FROM gem_posts
+      SELECT database_message_id,caption FROM gem_posts
       WHERE status='published' AND database_message_id IS NOT NULL
       ORDER BY created_at DESC LIMIT 1
     """)
     if not row:
-        await bot.send_message(chat_id,
-            "🎬 Ҳоло видео дастрас нест. Вақте маводи иҷозатдодашуда ба база ворид шавад, ҳамин ҷо пайдо мешавад.")
+        await bot.send_message(chat_id,"🎬 Ҳоло сериал дар база нест. Вақте қисми нави иҷозатдодашуда ворид шавад, ҳамин ҷо пайдо мешавад.")
         return False
-    await bot.copy_message(chat_id=chat_id,from_chat_id=DATABASE_CHANNEL,
-                           message_id=row["database_message_id"])
+    if row["caption"]:
+        await bot.send_message(chat_id,row["caption"],parse_mode="HTML")
+    await bot.copy_message(chat_id=chat_id,from_chat_id=DATABASE_CHANNEL,message_id=row["database_message_id"])
     return True
 
 @dp.callback_query(lambda query: query.data == "check_subscription" or (query.data or "").startswith("check_post:"))
@@ -280,9 +280,12 @@ async def check_subscription_callback(query: CallbackQuery):
         )
         return
 
-    await query.message.answer(
-        "✅ Обунаи шумо тасдиқ шуд!\n\n🎬 Хуш омадед ба GEM SERIES. Барои тамошои филмҳо ба канали расмии мо гузаред: @"+OWN_CHANNEL_USERNAME,
-        reply_markup=welcome_keyboard())
+    await query.message.answer("✅ Обуна тасдиқ шуд!\\n\\n🎬 Сериали охирини GEM SERIES:",reply_markup=welcome_keyboard())
+    try:
+        await send_latest_video(query.message.chat.id)
+    except Exception:
+        log.exception("Could not send latest series after subscription: user=%s",query.from_user.id)
+        await query.message.answer("❌ Сериал ҳоло фиристода нашуд. Баъдтар аз нав кӯшиш кунед.")
 
 def is_actual_video(msg):
     """Accept only a playable video file, not poster photos or ordinary documents."""
@@ -378,7 +381,7 @@ async def process_source_message(msg, source_entity, source_id):
       ON CONFLICT(source_chat_id,source_message_id) DO UPDATE
       SET status='processing', caption=EXCLUDED.caption
       WHERE gem_posts.status <> 'published'
-    """,source_id,source_mid,msg.date,(msg.message or ""))
+    """,source_id,source_mid,msg.date,published_caption(msg))
     try:
         archived=await user_client.forward_messages(
             entity=DATABASE_CHANNEL, messages=media_msg, from_peer=media_entity
@@ -427,7 +430,7 @@ async def import_one_latest_for_test(source_entity):
     # not prevent trying the next eligible video.
     async for msg in user_client.iter_messages(source_entity, limit=1000):
         scanned += 1
-        if getattr(msg, "out", False) or not is_actual_video(msg):
+        if getattr(msg, "out", False) or (not is_actual_video(msg) and not extract_source_bot_start(msg)):
             continue
         videos += 1
         if not is_free_source_post(msg):
@@ -483,10 +486,9 @@ async def start_mtproto_listener():
     source_entity=await user_client.get_entity(SOURCE_CHANNEL)
     user_client.add_event_handler(import_source_message,events.NewMessage(chats=source_entity))
     log.info("MTProto listener connected for source @%s",str(SOURCE_CHANNEL).lstrip("@"))
-    # First run: import at most one latest media post for a controlled test.
-    if os.getenv("INITIAL_IMPORT_ONE","true").lower() in {"1","true","yes"}:
-        await import_one_latest_for_test(source_entity)
     asyncio.create_task(user_client.run_until_disconnected())
+    if os.getenv("INITIAL_IMPORT_ONE","true").lower() in {"1","true","yes"}:
+        asyncio.create_task(import_one_latest_for_test(source_entity),name="gem-series-initial-import")
 
 async def subscription_ok(user_id):
     """Check membership in the required public channel, including restricted-but-still-member users."""
@@ -583,6 +585,7 @@ async def lifespan(app:FastAPI):
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
     update_worker_task=asyncio.create_task(telegram_update_worker(),name="telegram-update-worker")
+    log.info("Telegram update worker started")
     await start_mtproto_listener()
     webhook_info=await bot.get_webhook_info()
     target_webhook=f"{PUBLIC_URL}/telegram/webhook"
@@ -734,6 +737,7 @@ async def telegram_webhook(request:Request,
     try:
         update=Update.model_validate(await request.json(),context={"bot":bot})
         update_queue.put_nowait(update)
+        log.info("Webhook update queued: update_id=%s queue_size=%s",update.update_id,update_queue.qsize())
     except asyncio.QueueFull:
         log.error("Telegram update queue is full; asking Telegram to retry")
         raise HTTPException(status_code=503,detail="Bot is busy; retry later")
