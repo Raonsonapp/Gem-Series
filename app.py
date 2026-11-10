@@ -361,20 +361,47 @@ async def import_source_message(event):
         log.exception("Could not process incoming source post")
 
 async def import_one_latest_for_test(source_entity):
-    """Import exactly one latest media post as an initial smoke test."""
+    """Import exactly one authorized, non-paid video; keep scanning if a candidate fails."""
     source_id=int(utils.get_peer_id(source_entity))
-    async for msg in user_client.iter_messages(source_entity,limit=100):
-        if is_actual_video(msg) and not getattr(msg,"out",False):
-            if not is_free_source_post(msg):
-                log.info("Skipped video not explicitly linked to free bot (or marked VIP): %s", msg.id)
-                continue
-            done=await process_source_message(msg,source_entity,source_id)
-            if done:
-                log.info("Initial one-free-video test import completed.")
-            else:
-                log.info("Latest eligible video was already imported or import failed; no duplicate sent.")
+    scanned=0
+    videos=0
+    skipped_paid=0
+    failed=0
+
+    # Scan a wider recent window. A failed/previously archived candidate must
+    # not prevent trying the next eligible video.
+    async for msg in user_client.iter_messages(source_entity, limit=1000):
+        scanned += 1
+        if getattr(msg, "out", False) or not is_actual_video(msg):
+            continue
+        videos += 1
+        if not is_free_source_post(msg):
+            skipped_paid += 1
+            log.info("Test import skipped explicitly paid/VIP video: source=%s message=%s", source_id, msg.id)
+            continue
+
+        existing=await pool.fetchrow(
+            "SELECT status FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
+            source_id, int(msg.id)
+        )
+        if existing and existing["status"] == "published":
+            log.info("Test import candidate already published; checking next video: %s", msg.id)
+            continue
+
+        if await process_source_message(msg, source_entity, source_id):
+            log.info(
+                "TEST IMPORT SUCCESS: imported exactly one free video source=%s message=%s scanned=%s",
+                source_id, msg.id, scanned
+            )
             return
-    log.warning("No eligible free video found in the latest 100 source messages.")
+
+        failed += 1
+        log.warning("Test import candidate failed; checking next eligible video: %s", msg.id)
+
+    log.warning(
+        "TEST IMPORT FOUND NO PUBLISHABLE VIDEO: scanned=%s video_posts=%s paid_skipped=%s failed=%s",
+        scanned, videos, skipped_paid, failed
+    )
 
 async def start_mtproto_listener():
     global user_client
