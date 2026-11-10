@@ -562,6 +562,11 @@ async def lifespan(app:FastAPI):
     global pool, update_worker_task
     pool=await asyncpg.create_pool(DATABASE_URL,min_size=1,max_size=5,command_timeout=30,
                                    server_settings={"application_name":"gem-series-bot"})
+    global BOT_USERNAME
+    me=await bot.get_me()
+    if me.username:
+        BOT_USERNAME=me.username
+    log.info("Bot identity verified: @%s",BOT_USERNAME)
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
     update_worker_task=asyncio.create_task(telegram_update_worker(),name="telegram-update-worker")
