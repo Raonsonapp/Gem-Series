@@ -2,6 +2,7 @@ import spaces
 import asyncio
 import base64
 import hashlib
+import html
 import logging
 import time
 import os
@@ -89,16 +90,32 @@ CREATE TABLE IF NOT EXISTS gem_listener_sessions(
 CREATE INDEX IF NOT EXISTS gem_posts_status_idx ON gem_posts(status);
 """
 
-def pub_keyboard(key):
-    payload=f"post_{key[0]}_{key[1]}"
-    rows=[[InlineKeyboardButton(text="▶️ Тамошо / гирифтани қисм",
-                                url=f"https://t.me/{BOT_USERNAME}?start={payload}")],
-          [InlineKeyboardButton(text="📢 Канали мо",url=DESTINATION_URL)]]
-    if SUBSCRIPTION_URL:
-        rows.append([InlineKeyboardButton(text="📢 Обуна ба TM SCORE",url=SUBSCRIPTION_URL)])
-    if SPONSOR_BOT_URL:
-        rows.append([InlineKeyboardButton(text="🎁 Боти шарик (ихтиёрӣ)",url=SPONSOR_BOT_URL)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def extract_watch_url(msg):
+    """Use the source post's own watch/download URL; never invent a destination."""
+    preferred=("тамошо","гирифтан","watch","смотреть","скачать","download")
+    try:
+        for row in (getattr(msg,"buttons",None) or []):
+            for button in row:
+                label=(getattr(button,"text","") or "").lower()
+                url=getattr(button,"url",None)
+                if url and any(word in label for word in preferred):
+                    return url
+        for entity in (getattr(msg,"entities",None) or []):
+            url=getattr(entity,"url",None)
+            if url:
+                return url
+    except Exception:
+        log.exception("Could not inspect source watch link")
+    return None
+
+def published_caption(msg):
+    caption=(getattr(msg,"message","") or "").strip()
+    watch_url=extract_watch_url(msg)
+    if watch_url:
+        caption=html.escape(caption)
+        caption += '\\n\\n<a href="' + html.escape(watch_url,quote=True) + '">✅ ТАМОШО КАРДАН</a>'
+        return caption[:1024]
+    return caption[:1024]
 
 def join_keyboard(key=None):
     rows=[[InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE",url=SUBSCRIPTION_URL)]]
@@ -140,9 +157,19 @@ async def process_source_message(msg, source_entity, source_id):
         return False
     source_mid=int(msg.id)
     exists=await pool.fetchrow(
-      "SELECT status FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
+      "SELECT status,published_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
       source_id,source_mid)
     if exists and exists["status"]=="published":
+        if exists["published_message_id"]:
+            try:
+                await bot.edit_message_caption(
+                    chat_id=DESTINATION_CHANNEL,
+                    message_id=exists["published_message_id"],
+                    caption=published_caption(msg),
+                    parse_mode="HTML",
+                    reply_markup=None)
+            except Exception:
+                log.exception("Could not refresh published post caption %s/%s",source_id,source_mid)
         return False
     await pool.execute("""
       INSERT INTO gem_posts(source_chat_id,source_message_id,source_date,caption,status)
@@ -161,7 +188,10 @@ async def process_source_message(msg, source_entity, source_id):
         archive_id=int(archived.id)
         sent=await bot.copy_message(
             chat_id=DESTINATION_CHANNEL,from_chat_id=DATABASE_CHANNEL,
-            message_id=archive_id,reply_markup=pub_keyboard((source_id,source_mid)))
+            message_id=archive_id,
+            caption=published_caption(msg),
+            parse_mode="HTML",
+            reply_markup=None)
         await pool.execute("""
           UPDATE gem_posts SET database_message_id=$3,published_message_id=$4,status='published'
           WHERE source_chat_id=$1 AND source_message_id=$2
@@ -218,7 +248,7 @@ async def start_mtproto_listener():
         return
     source_entity=await user_client.get_entity(SOURCE_CHANNEL)
     user_client.add_event_handler(import_source_message,events.NewMessage(chats=source_entity))
-    log.info("MTProto listener connected for source @%s",SOURCE_CHANNEL)
+    log.info("MTProto listener connected for source @%s",str(SOURCE_CHANNEL).lstrip("@"))
     # First run: import at most one latest media post for a controlled test.
     if os.getenv("INITIAL_IMPORT_ONE","true").lower() in {"1","true","yes"}:
         await import_one_latest_for_test(source_entity)
