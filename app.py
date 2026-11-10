@@ -112,10 +112,10 @@ def published_caption(msg):
     caption=(getattr(msg,"message","") or "").strip()
     watch_url=extract_watch_url(msg)
     if watch_url:
-        caption=html.escape(caption)
-        caption += '\\n\\n<a href="' + html.escape(watch_url,quote=True) + '">✅ ТАМОШО КАРДАН</a>'
-        return caption[:1024]
-    return caption[:1024]
+        caption=html.escape(caption[:850])
+        caption += '\n\n<a href="' + html.escape(watch_url,quote=True) + '">✅ ТАМОШО КАРДАН</a>'
+        return caption
+    return html.escape(caption[:1024])
 
 def join_keyboard(key=None):
     rows=[[InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE",url=SUBSCRIPTION_URL)]]
