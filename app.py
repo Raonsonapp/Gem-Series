@@ -420,6 +420,15 @@ async def process_source_message(msg, source_entity, source_id):
         if isinstance(archived,list):
             archived=archived[0]
         archive_id=int(archived.id)
+        # Verify that the archive message is a real playable video before publishing its poster.
+        archived_check=await user_client.get_messages(DATABASE_CHANNEL,ids=archive_id)
+        if not is_actual_video(archived_check):
+            raise RuntimeError(
+                f"Archive message {archive_id} is not a playable video; refusing to publish a broken watch button"
+            )
+        log.info("Verified archived video: source=%s/%s archive_message_id=%s mime=%s",
+                 source_id,source_mid,archive_id,
+                 getattr(getattr(archived_check,"file",None),"mime_type",None))
         # Public channel gets poster + metadata only; the video stays in the private archive.
         poster_bytes=None
         try:
@@ -568,7 +577,11 @@ async def start_handler(message:Message):
         log.info("Handled /start: user=%s chat=%s",message.from_user.id,message.chat.id)
         return
     key=(int(match.group(1)),int(match.group(2)))
+    log.info("Watch deep-link received: user=%s chat=%s source=%s/%s",
+             message.from_user.id,message.chat.id,key[0],key[1])
     if not await subscription_ok(message.from_user.id):
+        log.info("Watch request blocked by subscription: user=%s source=%s/%s",
+                 message.from_user.id,key[0],key[1])
         await message.answer(
             "🔒 Барои гирифтани видео аввал ба канали TM SCORE обуна шавед.\n\nПас аз обуна тугмаи санҷишро пахш кунед.",
             reply_markup=join_keyboard(key))
@@ -578,14 +591,21 @@ async def start_handler(message:Message):
       WHERE source_chat_id=$1 AND source_message_id=$2 AND status='published'
     """,*key)
     if not row or not row["database_message_id"]:
-        await message.answer("⚠️ Ин сериал ҳоло дастрас нест. Баъдтар аз нав кӯшиш кунед.")
+        log.error("Watch request has no published archive row: user=%s source=%s/%s",
+                  message.from_user.id,key[0],key[1])
+        await message.answer("⚠️ Видеои ин сериал ҳоло дар бойгонӣ дастрас нест. Лутфан баъдтар кӯшиш кунед.")
         return
+    log.info("Delivering archived video: user=%s source=%s/%s archive_message_id=%s",
+             message.from_user.id,key[0],key[1],row["database_message_id"])
     try:
-        await bot.copy_message(chat_id=message.chat.id,from_chat_id=DATABASE_CHANNEL,
+        sent=await bot.copy_message(chat_id=message.chat.id,from_chat_id=DATABASE_CHANNEL,
             message_id=row["database_message_id"],caption=row["caption"] or None,parse_mode="HTML")
+        log.info("Video delivered successfully: user=%s source=%s/%s delivered_message_id=%s",
+                 message.from_user.id,key[0],key[1],sent.message_id)
     except Exception:
-        log.exception("Could not deliver video to user=%s",message.from_user.id)
-        await message.answer("❌ Ҳоло видео фиристода нашуд. Лутфан каме пас боз кӯшиш кунед.")
+        log.exception("Could not deliver archived video: user=%s source=%s/%s archive_message_id=%s",
+                      message.from_user.id,key[0],key[1],row["database_message_id"])
+        await message.answer("❌ Видео фиристода нашуд. Хатогӣ сабт шуд; каме пас аз нав кӯшиш кунед.")
 
 async def process_telegram_update(update):
     async with update_semaphore:
