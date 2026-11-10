@@ -173,7 +173,8 @@ def published_caption(msg):
             continue
         if "истехсоли:" in low or "истеҳсоли:" in low or "t.me/" in low or "https://" in low:
             continue
-        line=re.sub(r"^\s*[✅☑️📢🔊]+\s*","",line).strip()
+        # Remove source emoji prefixes: this formatter adds one consistent icon per detail.
+        line=re.sub(r"^\s*[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*","",line).strip()
         if line:
             cleaned.append(line)
 
@@ -206,7 +207,7 @@ def published_caption(msg):
         out.append(html.escape(" ".join(tags[:3])))
     out.extend([
         "━━━━━━━━━━━━━━━━",
-        "▶️ Барои гирифтани видео тугмаи «ТАМОШО КАРДАН»-ро пахш кунед."
+        "▶️ Тугмаи «ТАМОШО КАРДАН»-ро пахш кунед — видео дар ҳамин бот ба шумо фиристода мешавад."
     ])
     return "\n".join(out)[:1024]
 
@@ -568,9 +569,8 @@ async def start_handler(message:Message):
         greeting=(
             "👋 Асалому алайкум!\n\n"
             "🎬 <b>Хуш омадед ба GEM SERIES!</b>\n\n"
-            "🍿 Барои тамошои филмҳо ва қисмҳои сериалҳо ба канали расмии мо гузаред.\n\n"
-            "✨ Дар канал постер, маълумоти сериал ва тугмаи «ТАМОШО КАРДАН» ҷойгир мешаванд.\n\n"
-            "👇 Барои интихоби сериал ба канал дароед."
+            "Барои гирифтани филм ё қисми сериал, аз канали GEM SERIES тугмаи «ТАМОШО КАРДАН»-ро пахш кунед.\n\n"
+            "▶️ Видео мустақиман дар ҳамин бот фиристода мешавад."
         )
         await message.answer(tg_text(greeting),parse_mode="HTML",reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="🎬 КАНАЛИ GEM SERIES",url=OWN_CHANNEL_URL)]]))
