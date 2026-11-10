@@ -220,22 +220,54 @@ def is_actual_video(msg):
     return False
 
 
-def is_paid_only_post(msg):
-    """Conservatively skip content explicitly marked as paid/VIP/premium."""
+def source_bot_usernames(msg):
+    """Collect Telegram bot usernames linked by the source post, including inline buttons."""
+    found=set()
+    text=(getattr(msg, "message", "") or "")
+    candidates=[text]
+    try:
+        for row in (getattr(msg, "buttons", None) or []):
+            for button in row:
+                candidates.extend([
+                    getattr(button, "url", "") or "",
+                    getattr(button, "text", "") or ""
+                ])
+        for entity in (getattr(msg, "entities", None) or []):
+            candidates.extend([
+                getattr(entity, "url", "") or "",
+                getattr(entity, "text", "") or ""
+            ])
+    except Exception:
+        log.exception("Could not inspect source bot links")
+    joined=" ".join(candidates).lower()
+    for username in ("gemseries_robot", "gemseriesvip_bot"):
+        if re.search(r"(?<![a-z0-9_])"+re.escape(username)+r"(?![a-z0-9_])", joined):
+            found.add(username)
+    return found
+
+
+def is_free_source_post(msg):
+    """Publish only posts explicitly linked to the free bot; always reject VIP bot posts."""
+    users=source_bot_usernames(msg)
+    if "gemseriesvip_bot" in users:
+        return False
+    if "gemseries_robot" not in users:
+        return False
     text=(getattr(msg, "message", "") or "").lower()
     paid_markers=(
         "пулаки", "пулӣ", "платный", "платная", "платное",
         "paid", "premium", "vip", "vip only", "обунаи пулак",
         "танҳо пулак", "только платно"
     )
-    return any(marker in text for marker in paid_markers)
-
+    if any(marker in text for marker in paid_markers):
+        return False
+    return True
 
 async def process_source_message(msg, source_entity, source_id):
     if not msg or getattr(msg,"out",False) or not is_actual_video(msg):
         return False
-    if is_paid_only_post(msg):
-        log.info("Skipped paid/VIP source post %s/%s", source_id, getattr(msg,"id",None))
+    if not is_free_source_post(msg):
+        log.info("Skipped post not explicitly linked to free bot (or marked VIP): %s/%s", source_id, getattr(msg,"id",None))
         return False
     source_mid=int(msg.id)
     exists=await pool.fetchrow(
@@ -301,8 +333,8 @@ async def import_one_latest_for_test(source_entity):
     source_id=int(utils.get_peer_id(source_entity))
     async for msg in user_client.iter_messages(source_entity,limit=100):
         if is_actual_video(msg) and not getattr(msg,"out",False):
-            if is_paid_only_post(msg):
-                log.info("Skipped paid/VIP video during initial import: %s", msg.id)
+            if not is_free_source_post(msg):
+                log.info("Skipped video not explicitly linked to free bot (or marked VIP): %s", msg.id)
                 continue
             done=await process_source_message(msg,source_entity,source_id)
             if done:
