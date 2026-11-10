@@ -372,14 +372,33 @@ async def start_mtproto_listener():
     asyncio.create_task(user_client.run_until_disconnected())
 
 async def subscription_ok(user_id):
-    required={ChatMemberStatus.MEMBER,ChatMemberStatus.ADMINISTRATOR,ChatMemberStatus.CREATOR}
+    """Check membership in the required public channel, including restricted-but-still-member users."""
     for channel in SUBSCRIPTION_CHANNELS:
         try:
-            member=await bot.get_chat_member(channel,user_id)
-            if member.status not in required:
+            member = await bot.get_chat_member(channel, user_id)
+            status = member.status
+            is_member = (
+                status in {
+                    ChatMemberStatus.MEMBER,
+                    ChatMemberStatus.ADMINISTRATOR,
+                    ChatMemberStatus.CREATOR,
+                }
+                or (
+                    status == ChatMemberStatus.RESTRICTED
+                    and bool(getattr(member, "is_member", False))
+                )
+            )
+            log.info(
+                "Membership result: user=%s channel=%r status=%s is_member=%s",
+                user_id, channel, status, getattr(member, "is_member", None)
+            )
+            if not is_member:
                 return False
         except Exception as exc:
-            log.error("Membership check failed for channel=%r user=%s: %s",channel,user_id,exc)
+            log.exception(
+                "Membership API check failed: user=%s channel=%r",
+                user_id, channel
+            )
             return False
     return True
 
