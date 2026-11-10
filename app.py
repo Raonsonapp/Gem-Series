@@ -1,6 +1,9 @@
 import spaces
 import asyncio
+import base64
+import hashlib
 import logging
+import time
 import os
 import re
 from contextlib import asynccontextmanager
@@ -11,10 +14,12 @@ from aiogram.enums import ChatMemberStatus
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon import utils
+from telethon.errors import SessionPasswordNeededError
+from cryptography.fernet import Fernet
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -60,6 +65,7 @@ SUBSCRIPTION_URL=os.getenv("SUBSCRIPTION_URL","https://t.me/tm_score")
 SPONSOR_BOT_URL=os.getenv("SPONSOR_BOT_URL","").strip()
 pool=None
 user_client=None
+pending_login={}
 bot=Bot(BOT_TOKEN)
 dp=Dispatcher()
 
@@ -198,7 +204,12 @@ async def start_mtproto_listener():
     if not row:
         log.error("No MTProto session in PostgreSQL. Channel IDs alone cannot authorize reading the source channel; run the one-time local session setup.")
         return
-    user_client=TelegramClient(StringSession(row["session_data"]),API_ID,API_HASH)
+    try:
+        session_data=session_cipher().decrypt(row["session_data"].encode("ascii")).decode("utf-8")
+    except Exception:
+        log.exception("Stored MTProto session could not be decrypted; check TELETHON_SESSION_ENCRYPTION_KEY.")
+        return
+    user_client=TelegramClient(StringSession(session_data),API_ID,API_HASH)
     await user_client.connect()
     if not await user_client.is_user_authorized():
         log.error("Stored Telegram session is no longer authorized.")
@@ -295,7 +306,107 @@ async def health():
     return {"status":"healthy","database":"connected","posts":count,
             "mtproto_session_configured":bool(session),
             "listener_connected":bool(user_client and user_client.is_connected()),
-            "source":"@"+SOURCE_CHANNEL}
+            "source":"@"+str(SOURCE_CHANNEL).lstrip("@")}
+
+
+def owner_key_ok(request: Request):
+    import hmac
+    expected=os.getenv("TELETHON_LOGIN_ADMIN_KEY","")
+    supplied=request.headers.get("x-owner-key","")
+    if len(expected)<24 or not supplied or not hmac.compare_digest(expected,supplied):
+        raise HTTPException(status_code=403,detail="Owner access denied")
+
+def session_cipher():
+    secret=os.getenv("TELETHON_SESSION_ENCRYPTION_KEY","")
+    if len(secret)<24:
+        raise HTTPException(status_code=503,detail="Session encryption secret is not configured")
+    key=base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+    return Fernet(key)
+
+@app.get("/owner",response_class=HTMLResponse)
+async def owner_login_page():
+    return HTMLResponse("""<!doctype html><html lang="tg"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GEM SERIES — Telegram setup</title><style>
+body{font:16px Arial;background:#07110c;color:#eef7ef;margin:0;padding:18px}
+main{max-width:480px;margin:25px auto;background:#101d15;padding:20px;border-radius:16px}
+input,button{box-sizing:border-box;width:100%;padding:14px;margin:7px 0;border-radius:9px;border:1px solid #45634d;font-size:16px}
+input{background:#07110c;color:white}button{background:#28b463;color:#061009;font-weight:bold}
+small{color:#b7c9bb}#status{white-space:pre-wrap;margin-top:14px}
+</style><main><h2>🎬 GEM SERIES</h2><p>Танзими пайвасти Telegram</p>
+<input id="key" type="password" placeholder="Калиди соҳиби бот (Admin Key)" autocomplete="off">
+<input id="phone" placeholder="Рақами Telegram, мисол +992..." autocomplete="tel">
+<button onclick="sendCode()">1. Фиристодани рамз</button>
+<input id="code" placeholder="Рамзи Telegram" autocomplete="one-time-code">
+<input id="password" type="password" placeholder="Пароли 2-қадама (агар фаъол бошад)" autocomplete="off">
+<button onclick="verify()">2. Тасдиқ ва пайваст кардан</button>
+<div id="status">Калид ва рамзи Telegram-ро ба касе нафиристед. Онҳо танҳо дар ҳамин саҳифа ворид карда мешаванд.</div>
+</main><script>
+const statusBox=document.getElementById('status');
+async function call(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Owner-Key':document.getElementById('key').value},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw Error(j.detail||'Хато');return j}
+async function sendCode(){try{statusBox.textContent='Дархост фиристода мешавад...';let j=await call('/owner/request-code',{phone:document.getElementById('phone').value});statusBox.textContent=j.message}catch(e){statusBox.textContent='Хато: '+e.message}}
+async function verify(){try{statusBox.textContent='Пайваст карда мешавад...';let j=await call('/owner/verify-code',{phone:document.getElementById('phone').value,code:document.getElementById('code').value,password:document.getElementById('password').value});statusBox.textContent=j.message}catch(e){statusBox.textContent='Хато: '+e.message}}
+</script></html>""")
+
+@app.post("/owner/request-code")
+async def owner_request_code(request:Request):
+    owner_key_ok(request)
+    data=await request.json()
+    phone=str(data.get("phone","")).strip()
+    if not re.fullmatch(r"\\+[1-9]\\d{7,14}",phone):
+        raise HTTPException(status_code=400,detail="Рақами телефонро бо формати +992 нависед")
+    old=pending_login.pop(phone,None)
+    if old:
+        try: await old["client"].disconnect()
+        except Exception: pass
+    client=TelegramClient(StringSession(),API_ID,API_HASH)
+    await client.connect()
+    try:
+        sent=await client.send_code_request(phone)
+        pending_login[phone]={"client":client,"phone_code_hash":sent.phone_code_hash,"created":time.monotonic()}
+        return {"ok":True,"message":"Рамз ба Telegram фиристода шуд. Рамзро танҳо дар ҳамин саҳифа ворид кунед."}
+    except Exception:
+        await client.disconnect()
+        log.exception("Telegram login code request failed")
+        raise HTTPException(status_code=400,detail="Telegram рамз нафиристод. Рақам ва API танзимотро санҷед.")
+
+@app.post("/owner/verify-code")
+async def owner_verify_code(request:Request):
+    owner_key_ok(request)
+    data=await request.json()
+    phone=str(data.get("phone","")).strip()
+    code=str(data.get("code","")).strip().replace(" ","")
+    password=str(data.get("password",""))
+    state=pending_login.get(phone)
+    if not state or time.monotonic()-state["created"]>600:
+        pending_login.pop(phone,None)
+        raise HTTPException(status_code=400,detail="Дархости рамз гузаштааст. Рамзи нав гиред.")
+    if not code or len(code)>16:
+        raise HTTPException(status_code=400,detail="Рамз нодуруст аст.")
+    client=state["client"]
+    try:
+        try:
+            if password:
+                await client.sign_in(password=password)
+            else:
+                await client.sign_in(phone=phone,code=code,phone_code_hash=state["phone_code_hash"])
+        except SessionPasswordNeededError:
+            raise HTTPException(status_code=428,detail="Пароли тасдиқи дуқадамаро дар майдони парол ворид кунед.")
+        if not await client.is_user_authorized():
+            raise HTTPException(status_code=400,detail="Telegram аккаунтро тасдиқ накард.")
+        encrypted=session_cipher().encrypt(client.session.save().encode("utf-8")).decode("ascii")
+        await pool.execute("""INSERT INTO gem_listener_sessions(session_name,session_data,updated_at)
+          VALUES('gem-series-user',$1,NOW())
+          ON CONFLICT(session_name) DO UPDATE SET session_data=EXCLUDED.session_data,updated_at=NOW()""",encrypted)
+        await client.disconnect()
+        pending_login.pop(phone,None)
+        await start_mtproto_listener()
+        return {"ok":True,"message":"Telegram пайваст шуд. Ҳоло /health-ро санҷед."}
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("Telegram login verification failed")
+        raise HTTPException(status_code=400,detail="Тасдиқ нашуд. Рамзро санҷед ё рамзи нав гиред.")
+
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request:Request,
