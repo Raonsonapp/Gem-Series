@@ -6,6 +6,7 @@ import html
 import logging
 import time
 import os
+from datetime import datetime, timezone
 import re
 from contextlib import asynccontextmanager
 
@@ -13,7 +14,7 @@ import asyncpg
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ChatMemberStatus
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from telethon import TelegramClient, events
@@ -85,6 +86,7 @@ CREATE TABLE IF NOT EXISTS gem_posts(
  caption TEXT NOT NULL DEFAULT '',
  database_message_id BIGINT,
  published_message_id BIGINT,
+ poster_message_id BIGINT,
  status TEXT NOT NULL DEFAULT 'received',
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  PRIMARY KEY(source_chat_id,source_message_id)
@@ -94,6 +96,7 @@ CREATE TABLE IF NOT EXISTS gem_listener_sessions(
  session_data TEXT NOT NULL,
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE gem_posts ADD COLUMN IF NOT EXISTS poster_message_id BIGINT;
 CREATE INDEX IF NOT EXISTS gem_posts_status_idx ON gem_posts(status);
 """
 
@@ -223,7 +226,8 @@ def welcome_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎬 КАНАЛИ GEM SERIES",url=OWN_CHANNEL_URL)],
         [InlineKeyboardButton(text="📢 Обуна ба TM SCORE",url=SUBSCRIPTION_URL)],
-        [InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")]
+        [InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")],
+        [InlineKeyboardButton(text="🎬 Сериали охирин",callback_data="latest_series")]
     ])
 
 async def send_latest_video(chat_id):
@@ -240,10 +244,11 @@ async def send_latest_video(chat_id):
     await bot.copy_message(chat_id=chat_id,from_chat_id=DATABASE_CHANNEL,message_id=row["database_message_id"])
     return True
 
-@dp.callback_query(lambda query: query.data == "check_subscription" or (query.data or "").startswith("check_post:"))
+@dp.callback_query(lambda query: query.data in {"check_subscription","latest_series"} or (query.data or "").startswith("check_post:"))
 async def check_subscription_callback(query: CallbackQuery):
     # Acknowledge the button immediately so Telegram does not keep it spinning.
     post_key = None
+    wants_latest = query.data == "latest_series"
     if (query.data or "").startswith("check_post:"):
         try:
             _, chat_id, message_id = query.data.split(":", 2)
@@ -389,14 +394,27 @@ async def process_source_message(msg, source_entity, source_id):
         if isinstance(archived,list):
             archived=archived[0]
         archive_id=int(archived.id)
-        sent=await bot.copy_message(
-            chat_id=DESTINATION_CHANNEL,from_chat_id=DATABASE_CHANNEL,
-            message_id=archive_id,
-            caption=published_caption(msg),
-            parse_mode="HTML",
-            reply_markup=published_keyboard(msg))
+        # Public channel gets poster + metadata only; the video stays in the private archive.
+        poster_bytes=None
+        try:
+            if getattr(msg,"photo",None):
+                poster_bytes=await user_client.download_media(msg.photo,file=bytes)
+            if not poster_bytes:
+                poster_bytes=await user_client.download_media(media_msg,file=bytes,thumb=-1)
+        except Exception:
+            log.exception("Poster extraction failed for %s/%s",source_id,source_mid)
+        caption=published_caption(msg)
+        if poster_bytes:
+            sent=await bot.send_photo(chat_id=DESTINATION_CHANNEL,
+                photo=BufferedInputFile(poster_bytes,filename=f"gem-{source_mid}.jpg"),
+                caption=caption,parse_mode="HTML",reply_markup=published_keyboard(msg))
+        else:
+            log.warning("No poster available; publishing metadata-only card for %s/%s",source_id,source_mid)
+            sent=await bot.send_message(chat_id=DESTINATION_CHANNEL,text=caption,
+                parse_mode="HTML",reply_markup=published_keyboard(msg))
         await pool.execute("""
-          UPDATE gem_posts SET database_message_id=$3,published_message_id=$4,status='published'
+          UPDATE gem_posts SET database_message_id=$3,published_message_id=$4,
+          poster_message_id=$4,status='published'
           WHERE source_chat_id=$1 AND source_message_id=$2
         """,source_id,source_mid,archive_id,sent.message_id)
         log.info("Published source post %s/%s using media from %s",
@@ -418,48 +436,33 @@ async def import_source_message(event):
     except Exception:
         log.exception("Could not process incoming source post")
 
-async def import_one_latest_for_test(source_entity):
-    """Import exactly one authorized, non-paid video; keep scanning if a candidate fails."""
+async def import_free_since_start(source_entity):
+    """Backfill eligible free episodes published from 2026-11-10 onward."""
     source_id=int(utils.get_peer_id(source_entity))
-    scanned=0
-    videos=0
-    skipped_paid=0
-    failed=0
-
-    # Scan a wider recent window. A failed/previously archived candidate must
-    # not prevent trying the next eligible video.
-    async for msg in user_client.iter_messages(source_entity, limit=1000):
+    cutoff=datetime(2026,11,10,tzinfo=timezone.utc)
+    scanned=published=skipped=failed=0
+    log.info("Starting free-series backfill from %s UTC",cutoff.isoformat())
+    async for msg in user_client.iter_messages(source_entity,reverse=True,offset_date=cutoff):
         scanned += 1
-        if getattr(msg, "out", False) or (not is_actual_video(msg) and not extract_source_bot_start(msg)):
+        if getattr(msg,"out",False) or not (is_actual_video(msg) or extract_source_bot_start(msg)):
             continue
-        videos += 1
         if not is_free_source_post(msg):
-            skipped_paid += 1
-            log.info("Test import skipped explicitly paid/VIP video: source=%s message=%s", source_id, msg.id)
+            skipped += 1
             continue
+        try:
+            if await process_source_message(msg,source_entity,source_id):
+                published += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+            log.exception("Backfill item failed: source=%s message=%s",source_id,msg.id)
+        if scanned % 25 == 0:
+            log.info("Backfill progress: scanned=%s published=%s skipped_paid=%s failed=%s",
+                     scanned,published,skipped,failed)
+    log.info("BACKFILL FINISHED: scanned=%s published=%s skipped_paid=%s failed=%s",
+             scanned,published,skipped,failed)
 
-        existing=await pool.fetchrow(
-            "SELECT status FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
-            source_id, int(msg.id)
-        )
-        if existing and existing["status"] == "published":
-            log.info("Test import candidate already published; checking next video: %s", msg.id)
-            continue
-
-        if await process_source_message(msg, source_entity, source_id):
-            log.info(
-                "TEST IMPORT SUCCESS: imported exactly one free video source=%s message=%s scanned=%s",
-                source_id, msg.id, scanned
-            )
-            return
-
-        failed += 1
-        log.warning("Test import candidate failed; checking next eligible video: %s", msg.id)
-
-    log.warning(
-        "TEST IMPORT FOUND NO PUBLISHABLE VIDEO: scanned=%s video_posts=%s paid_skipped=%s failed=%s",
-        scanned, videos, skipped_paid, failed
-    )
 
 async def start_mtproto_listener():
     global user_client
@@ -487,8 +490,8 @@ async def start_mtproto_listener():
     user_client.add_event_handler(import_source_message,events.NewMessage(chats=source_entity))
     log.info("MTProto listener connected for source @%s",str(SOURCE_CHANNEL).lstrip("@"))
     asyncio.create_task(user_client.run_until_disconnected())
-    if os.getenv("INITIAL_IMPORT_ONE","true").lower() in {"1","true","yes"}:
-        asyncio.create_task(import_one_latest_for_test(source_entity),name="gem-series-initial-import")
+    if os.getenv("BACKFILL_FROM_2026_11_10","true").lower() in {"1","true","yes"}:
+        asyncio.create_task(import_free_since_start(source_entity),name="gem-series-backfill")
 
 async def subscription_ok(user_id):
     """Check membership in the required public channel, including restricted-but-still-member users."""
@@ -534,18 +537,10 @@ async def start_handler(message:Message):
             "📢 Канали мо: @"+OWN_CHANNEL_USERNAME+"\n\n"
             "Барои кушодани видео аз тугмаи «▶️ ТАМОШО КАРДАН» зери филми интихобшуда истифода баред."
         )
-        # Reply to /start immediately; do not make the greeting depend on a
-        # membership API request. Membership is checked only when the user
-        # presses the verification button or requests a specific film.
-        await message.answer(
-            greeting+"\\n\\n🔒 Барои гирифтани сериал аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
-            reply_markup=join_keyboard())
+        # One deterministic greeting; membership is checked only on button press.
+        await message.answer(greeting+"\\n\\n🔒 Барои гирифтани сериал аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
+                             reply_markup=join_keyboard())
         log.info("Handled bare /start: user=%s chat=%s",message.from_user.id,message.chat.id)
-        try:
-            if await subscription_ok(message.from_user.id):
-                await send_latest_video(message.chat.id)
-        except Exception:
-            log.exception("Bare /start latest-series delivery failed: user=%s",message.from_user.id)
         return
     key=(int(match.group(1)),int(match.group(2)))
     if not await subscription_ok(message.from_user.id):
