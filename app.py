@@ -75,6 +75,8 @@ pending_login={}
 # Telegram webhook requests are acknowledged quickly; updates are processed by one worker.
 update_queue=asyncio.Queue(maxsize=1000)
 update_worker_task=None
+update_tasks=set()
+update_semaphore=asyncio.Semaphore(20)
 bot=Bot(BOT_TOKEN)
 dp=Dispatcher()
 
@@ -234,14 +236,13 @@ async def send_latest_video(chat_id):
     row=await pool.fetchrow("""
       SELECT database_message_id,caption FROM gem_posts
       WHERE status='published' AND database_message_id IS NOT NULL
-      ORDER BY created_at DESC LIMIT 1
+      ORDER BY source_date DESC NULLS LAST, source_message_id DESC LIMIT 1
     """)
     if not row:
-        await bot.send_message(chat_id,"🎬 Ҳоло сериал дар база нест. Вақте қисми нави иҷозатдодашуда ворид шавад, ҳамин ҷо пайдо мешавад.")
+        await bot.send_message(chat_id,"🎬 Ҳоло сериал дастрас нест. Қисмҳои нави ройгон пас аз ворид шудан дар ҳамин ҷо пайдо мешаванд.")
         return False
-    if row["caption"]:
-        await bot.send_message(chat_id,row["caption"],parse_mode="HTML")
-    await bot.copy_message(chat_id=chat_id,from_chat_id=DATABASE_CHANNEL,message_id=row["database_message_id"])
+    await bot.copy_message(chat_id=chat_id,from_chat_id=DATABASE_CHANNEL,
+        message_id=row["database_message_id"],caption=row["caption"] or None,parse_mode="HTML")
     return True
 
 @dp.callback_query(lambda query: query.data in {"check_subscription","latest_series"} or (query.data or "").startswith("check_post:"))
@@ -292,7 +293,7 @@ async def check_subscription_callback(query: CallbackQuery):
             log.exception("Could not send latest series: user=%s",query.from_user.id)
             await query.message.answer("❌ Сериал ҳоло фиристода нашуд. Баъдтар аз нав кӯшиш кунед.")
         return
-    await query.message.answer("✅ Обуна тасдиқ шуд! Барои гирифтани қисми охирин тугмаи «Сериали охирин»-ро пахш кунед.",reply_markup=welcome_keyboard())
+    await query.message.answer("✅ Обунаи шумо тасдиқ шуд! Акнун метавонед сериалро тамошо кунед. 🎬")
 
 def is_actual_video(msg):
     """Accept only a playable video file, not poster photos or ordinary documents."""
@@ -545,15 +546,16 @@ async def start_handler(message:Message):
     match=re.fullmatch(r"post_(-?\d+)_([0-9]+)",payload)
     if not match:
         greeting=(
-            "✅ Асалому алейкум!\n\n"
-            "🎬 Хуш омадед ба GEM SERIES!\n"
-            "Дар ин бот метавонед филмҳо ва қисмҳои сериалҳоро аз канали расмии мо дастрас кунед.\n\n"
-            "📢 Канали мо: @"+OWN_CHANNEL_USERNAME+"\n\n"
-            "Барои кушодани видео аз тугмаи «▶️ ТАМОШО КАРДАН» зери филми интихобшуда истифода баред."
+            "👋 Асалому алайкум!\\n\\n"
+            "🎬 <b>Хуш омадед ба GEM SERIES!</b>\\n"
+            "Барои дидани филмҳо ва қисмҳои сериалҳо ба канали расмии мо гузаред.\\n\\n"
+            "🍿 Навгониҳо бо тавсиф ва тугмаи тамошо дар канал ҷойгир мешаванд.\\n"
+            "👇 Барои интихоби сериал ба канал ворид шавед."
         )
-        # One deterministic greeting; membership is checked only on button press.
-        await message.answer(greeting+"\n\n🔒 Барои гирифтани сериал аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
-                             reply_markup=join_keyboard())
+        await message.answer(greeting,parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🎬 КАНАЛИ РАСМИИ МО",url=OWN_CHANNEL_URL)
+            ]]))
         log.info("Handled bare /start: user=%s chat=%s",message.from_user.id,message.chat.id)
         return
     key=(int(match.group(1)),int(match.group(2)))
@@ -575,15 +577,28 @@ async def start_handler(message:Message):
         log.exception("Could not deliver latest video to user=%s",message.from_user.id)
         await message.answer("❌ Ҳоло видео фиристода нашуд. Лутфан каме пас боз кӯшиш кунед.")
 
+async def process_telegram_update(update):
+    async with update_semaphore:
+        try:
+            await asyncio.wait_for(dp.feed_update(bot,update),timeout=25)
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            log.error("Telegram update timed out: update_id=%s",getattr(update,"update_id",None))
+        except Exception:
+            log.exception("Telegram update processing failed: update_id=%s",getattr(update,"update_id",None))
+
 async def telegram_update_worker():
     while True:
         update=await update_queue.get()
         try:
-            await dp.feed_update(bot,update)
+            task=asyncio.create_task(process_telegram_update(update))
+            update_tasks.add(task)
+            task.add_done_callback(update_tasks.discard)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("Telegram update processing failed: update_id=%s",getattr(update,"update_id",None))
+            log.exception("Could not schedule Telegram update")
         finally:
             update_queue.task_done()
 
@@ -620,6 +635,10 @@ async def lifespan(app:FastAPI):
                 await update_worker_task
             except asyncio.CancelledError:
                 pass
+        for task in list(update_tasks):
+            task.cancel()
+        if update_tasks:
+            await asyncio.gather(*update_tasks,return_exceptions=True)
         if user_client and user_client.is_connected():
             await user_client.disconnect()
         await bot.delete_webhook()
