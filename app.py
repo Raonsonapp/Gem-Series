@@ -170,8 +170,10 @@ def published_caption(msg):
 def join_keyboard(key=None):
     rows=[[InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE",url=SUBSCRIPTION_URL)]]
     if key:
-        check_url=f"https://t.me/{BOT_USERNAME}?start=post_{key[0]}_{key[1]}"
-        rows.append([InlineKeyboardButton(text="✅ Санҷидани обуна",url=check_url)])
+        rows.append([InlineKeyboardButton(
+            text="✅ Санҷидани обуна",
+            callback_data=f"check_post:{key[0]}:{key[1]}"
+        )])
     else:
         rows.append([InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")])
     if SPONSOR_BOT_URL:
@@ -185,22 +187,49 @@ def welcome_keyboard():
         [InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")]
     ])
 
-@dp.callback_query(lambda query: query.data == "check_subscription")
+@dp.callback_query(lambda query: query.data == "check_subscription" or (query.data or "").startswith("check_post:"))
 async def check_subscription_callback(query: CallbackQuery):
-    # Telegram requires callback acknowledgement within a short time.
-    # Acknowledge immediately, before the network membership check.
-    await query.answer()
+    # Acknowledge the button immediately so Telegram does not keep it spinning.
+    await query.answer("Санҷида мешавад...")
+    post_key = None
+    if (query.data or "").startswith("check_post:"):
+        try:
+            _, chat_id, message_id = query.data.split(":", 2)
+            post_key = (int(chat_id), int(message_id))
+        except (TypeError, ValueError):
+            await query.answer("Дархост нодуруст аст.", show_alert=True)
+            return
+
     is_subscribed = await subscription_ok(query.from_user.id)
-    if is_subscribed:
-        if query.message:
+    if not query.message:
+        return
+
+    if not is_subscribed:
+        await query.message.answer(
+            "❌ Шумо ҳоло ба @tm_score обуна нестед. Аввал обуна шавед ва баъд «Санҷидани обуна»-ро пахш кунед.",
+            reply_markup=join_keyboard(post_key))
+        return
+
+    if post_key:
+        row = await pool.fetchrow(
+            "SELECT database_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2 AND status='published'",
+            *post_key
+        )
+        if not row or not row["database_message_id"]:
             await query.message.answer(
-                "🎬 Хуш омадед! Обунаи шумо тасдиқ шуд. Вақте ки мавод интихоб мекунед, онро гирифта метавонед.",
-                reply_markup=welcome_keyboard())
-    else:
-        if query.message:
-            await query.message.answer(
-                "❌ Шумо ҳоло ба @tm_score обуна нестед. Аввал обуна шавед ва боз санҷед.",
-                reply_markup=join_keyboard())
+                "✅ Обуна тасдиқ шуд, аммо ин видео ҳоло дар база дастрас нест. Лутфан баъдтар кӯшиш кунед."
+            )
+            return
+        await bot.copy_message(
+            chat_id=query.message.chat.id,
+            from_chat_id=DATABASE_CHANNEL,
+            message_id=row["database_message_id"]
+        )
+        return
+
+    await query.message.answer(
+        "🎬 Хуш омадед! Обунаи шумо тасдиқ шуд.",
+        reply_markup=welcome_keyboard())
 
 def is_actual_video(msg):
     """Accept only a playable video file, not poster photos or ordinary documents."""
