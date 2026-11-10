@@ -285,12 +285,14 @@ async def check_subscription_callback(query: CallbackQuery):
         )
         return
 
-    await query.message.answer("✅ Обуна тасдиқ шуд!\\n\\n🎬 Сериали охирини GEM SERIES:",reply_markup=welcome_keyboard())
-    try:
-        await send_latest_video(query.message.chat.id)
-    except Exception:
-        log.exception("Could not send latest series after subscription: user=%s",query.from_user.id)
-        await query.message.answer("❌ Сериал ҳоло фиристода нашуд. Баъдтар аз нав кӯшиш кунед.")
+    if wants_latest:
+        try:
+            await send_latest_video(query.message.chat.id)
+        except Exception:
+            log.exception("Could not send latest series: user=%s",query.from_user.id)
+            await query.message.answer("❌ Сериал ҳоло фиристода нашуд. Баъдтар аз нав кӯшиш кунед.")
+        return
+    await query.message.answer("✅ Обуна тасдиқ шуд! Барои гирифтани қисми охирин тугмаи «Сериали охирин»-ро пахш кунед.",reply_markup=welcome_keyboard())
 
 def is_actual_video(msg):
     """Accept only a playable video file, not poster photos or ordinary documents."""
@@ -538,7 +540,7 @@ async def start_handler(message:Message):
             "Барои кушодани видео аз тугмаи «▶️ ТАМОШО КАРДАН» зери филми интихобшуда истифода баред."
         )
         # One deterministic greeting; membership is checked only on button press.
-        await message.answer(greeting+"\\n\\n🔒 Барои гирифтани сериал аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
+        await message.answer(greeting+"\n\n🔒 Барои гирифтани сериал аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
                              reply_markup=join_keyboard())
         log.info("Handled bare /start: user=%s chat=%s",message.from_user.id,message.chat.id)
         return
