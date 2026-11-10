@@ -645,6 +645,17 @@ async def telegram_update_worker():
         finally:
             update_queue.task_done()
 
+async def telegram_worker_supervisor():
+    """Keep the webhook update consumer alive for the entire app lifespan."""
+    while True:
+        try:
+            await telegram_update_worker()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Telegram worker crashed; restarting in 2 seconds")
+            await asyncio.sleep(2)
+
 async def keepalive_worker():
     """Send a lightweight health request every ten minutes and log the heartbeat."""
     url=f"{PUBLIC_URL}/health"
@@ -671,16 +682,28 @@ async def lifespan(app:FastAPI):
     log.info("Bot identity verified: @%s",BOT_USERNAME)
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
-    update_worker_task=asyncio.create_task(telegram_update_worker(),name="telegram-update-worker")
+    update_worker_task=asyncio.create_task(telegram_worker_supervisor(),name="telegram-update-worker-supervisor")
     heartbeat_task=asyncio.create_task(keepalive_worker(),name="ten-minute-heartbeat")
-    log.info("Telegram update worker started")
+    log.info("Telegram update worker supervisor started")
     log.info("10-minute health heartbeat scheduled")
     await start_mtproto_listener()
-    webhook_info=await bot.get_webhook_info()
     target_webhook=f"{PUBLIC_URL}/telegram/webhook"
+    # Always re-apply the complete webhook configuration. Checking only the URL
+    # leaves stale secret_token / allowed_updates in place after Space restarts.
+    await bot.set_webhook(
+        url=target_webhook,
+        secret_token=WEBHOOK_SECRET,
+        allowed_updates=["message","callback_query"],
+        drop_pending_updates=False
+    )
+    webhook_info=await bot.get_webhook_info()
+    log.info(
+        "Telegram webhook configured: url=%s pending=%s last_error=%s allowed_updates=%s",
+        webhook_info.url, webhook_info.pending_update_count,
+        webhook_info.last_error_message, webhook_info.allowed_updates
+    )
     if webhook_info.url != target_webhook:
-        await bot.set_webhook(url=target_webhook,secret_token=WEBHOOK_SECRET,
-                              allowed_updates=dp.resolve_used_update_types(),drop_pending_updates=False)
+        raise RuntimeError("Telegram webhook URL verification failed")
     log.info("Telegram webhook ready: %s", target_webhook)
     log.info("Channel config: source=%r archive=%r target=%r subscription_channels=%r",
              SOURCE_CHANNEL,DATABASE_CHANNEL,DESTINATION_CHANNEL,SUBSCRIPTION_CHANNELS)
@@ -726,6 +749,9 @@ async def health():
     return {"status":"healthy","database":"connected","posts":count,
             "mtproto_session_configured":bool(session),
             "listener_connected":bool(user_client and user_client.is_connected()),
+            "telegram_worker_running":bool(update_worker_task and not update_worker_task.done()),
+            "telegram_queue_size":update_queue.qsize(),
+            "telegram_webhook":(await bot.get_webhook_info()).url,
             "source":"@"+str(SOURCE_CHANNEL).lstrip("@")}
 
 
