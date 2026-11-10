@@ -657,18 +657,33 @@ async def telegram_worker_supervisor():
             await asyncio.sleep(2)
 
 async def keepalive_worker():
-    """Send a lightweight health request every ten minutes and log the heartbeat."""
+    """Check app health and restore Telegram webhook if it was cleared."""
     url=f"{PUBLIC_URL}/health"
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    target_webhook=f"{PUBLIC_URL}/telegram/webhook"
+    async with httpx.AsyncClient(timeout=20.0) as client:
         while True:
             await asyncio.sleep(600)
             try:
                 response=await client.get(url)
-                log.info("10-minute heartbeat: health_http=%s",response.status_code)
+                info=await bot.get_webhook_info()
+                if info.url != target_webhook:
+                    log.error("Webhook watchdog: expected=%s actual=%s; restoring",target_webhook,info.url)
+                    await bot.set_webhook(
+                        url=target_webhook,
+                        secret_token=WEBHOOK_SECRET,
+                        allowed_updates=["message","callback_query"],
+                        drop_pending_updates=False
+                    )
+                    info=await bot.get_webhook_info()
+                log.info(
+                    "10-minute heartbeat: health_http=%s webhook_ok=%s pending=%s last_error=%s",
+                    response.status_code, info.url==target_webhook,
+                    info.pending_update_count, info.last_error_message
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("10-minute heartbeat request failed")
+                log.exception("10-minute heartbeat/webhook watchdog failed")
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
