@@ -190,10 +190,17 @@ def published_caption(msg):
         out.append(html.escape(" ".join(tags[:3])))
     out.extend([
         "━━━━━━━━━━━━━━━━",
-        '▶️ <a href="'+html.escape(bot_url,quote=True)+'"><b>ТАМОШО ДАР GEM SERIES</b></a>',
-        '🌐 <a href="'+html.escape(DESTINATION_URL,quote=True)+'">GEM SERIES • @afsonaishab</a>'
+        "▶️ Барои гирифтани видео тугмаи «ТАМОШО КАРДАН»-ро пахш кунед."
     ])
     return "\n".join(out)[:1024]
+
+def published_keyboard(msg):
+    source_id=int(utils.get_peer_id(getattr(msg,"chat",None))) if getattr(msg,"chat",None) else int(getattr(msg,"peer_id",0) or 0)
+    post_id=int(getattr(msg,"id",0) or 0)
+    deep_link=f"https://t.me/{BOT_USERNAME}?start=post_{source_id}_{post_id}"
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="▶️ ТАМОШО КАРДАН",url=deep_link)
+    ]])
 
 def join_keyboard(key=None):
     rows=[[InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE",url=SUBSCRIPTION_URL)]]
@@ -232,7 +239,6 @@ async def send_latest_video(chat_id):
 @dp.callback_query(lambda query: query.data == "check_subscription" or (query.data or "").startswith("check_post:"))
 async def check_subscription_callback(query: CallbackQuery):
     # Acknowledge the button immediately so Telegram does not keep it spinning.
-    await query.answer("Санҷида мешавад...")
     post_key = None
     if (query.data or "").startswith("check_post:"):
         try:
@@ -242,6 +248,7 @@ async def check_subscription_callback(query: CallbackQuery):
             await query.answer("Дархост нодуруст аст.", show_alert=True)
             return
 
+    await query.answer("Санҷида мешавад...")
     is_subscribed = await subscription_ok(query.from_user.id)
     if not query.message:
         return
@@ -378,7 +385,7 @@ async def process_source_message(msg, source_entity, source_id):
             message_id=archive_id,
             caption=published_caption(msg),
             parse_mode="HTML",
-            reply_markup=None)
+            reply_markup=published_keyboard(msg))
         await pool.execute("""
           UPDATE gem_posts SET database_message_id=$3,published_message_id=$4,status='published'
           WHERE source_chat_id=$1 AND source_message_id=$2
@@ -531,8 +538,12 @@ async def start_handler(message:Message):
     if not row or not row["database_message_id"]:
         await message.answer("Ин мавод ҳоло дастрас нест.")
         return
-    await bot.copy_message(chat_id=message.chat.id,from_chat_id=DATABASE_CHANNEL,
-                           message_id=row["database_message_id"])
+    try:
+        await bot.copy_message(chat_id=message.chat.id,from_chat_id=DATABASE_CHANNEL,
+                               message_id=row["database_message_id"])
+    except Exception:
+        log.exception("Could not deliver latest video to user=%s",message.from_user.id)
+        await message.answer("❌ Ҳоло видео фиристода нашуд. Лутфан каме пас боз кӯшиш кунед.")
 
 async def telegram_update_worker():
     while True:
