@@ -538,8 +538,14 @@ async def start_handler(message:Message):
         # membership API request. Membership is checked only when the user
         # presses the verification button or requests a specific film.
         await message.answer(
-            greeting+"\n\n🔒 Барои гирифтани филм аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
+            greeting+"\\n\\n🔒 Барои гирифтани сериал аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
             reply_markup=join_keyboard())
+        log.info("Handled bare /start: user=%s chat=%s",message.from_user.id,message.chat.id)
+        try:
+            if await subscription_ok(message.from_user.id):
+                await send_latest_video(message.chat.id)
+        except Exception:
+            log.exception("Bare /start latest-series delivery failed: user=%s",message.from_user.id)
         return
     key=(int(match.group(1)),int(match.group(2)))
     if not await subscription_ok(message.from_user.id):
