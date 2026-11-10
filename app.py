@@ -68,6 +68,9 @@ SPONSOR_BOT_URL=os.getenv("SPONSOR_BOT_URL","").strip()
 pool=None
 user_client=None
 pending_login={}
+# Telegram webhook requests are acknowledged quickly; updates are processed by one worker.
+update_queue=asyncio.Queue(maxsize=1000)
+update_worker_task=None
 bot=Bot(BOT_TOKEN)
 dp=Dispatcher()
 
@@ -346,6 +349,9 @@ async def import_one_latest_for_test(source_entity):
 
 async def start_mtproto_listener():
     global user_client
+    if user_client and user_client.is_connected():
+        await user_client.disconnect()
+    user_client=None
     row=await pool.fetchrow(
       "SELECT session_data FROM gem_listener_sessions WHERE session_name='gem-series-user'")
     if not row:
@@ -431,12 +437,26 @@ async def start_handler(message:Message):
                            message_id=row["database_message_id"])
 
 @asynccontextmanager
+async def telegram_update_worker():
+    while True:
+        update=await update_queue.get()
+        try:
+            await dp.feed_update(bot,update)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Telegram update processing failed: update_id=%s",getattr(update,"update_id",None))
+        finally:
+            update_queue.task_done()
+
+@asynccontextmanager
 async def lifespan(app:FastAPI):
-    global pool
+    global pool, update_worker_task
     pool=await asyncpg.create_pool(DATABASE_URL,min_size=1,max_size=5,command_timeout=30,
                                    server_settings={"application_name":"gem-series-bot"})
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
+    update_worker_task=asyncio.create_task(telegram_update_worker(),name="telegram-update-worker")
     await start_mtproto_listener()
     webhook_info=await bot.get_webhook_info()
     target_webhook=f"{PUBLIC_URL}/telegram/webhook"
@@ -450,6 +470,12 @@ async def lifespan(app:FastAPI):
     try:
         yield
     finally:
+        if update_worker_task:
+            update_worker_task.cancel()
+            try:
+                await update_worker_task
+            except asyncio.CancelledError:
+                pass
         if user_client and user_client.is_connected():
             await user_client.disconnect()
         await bot.delete_webhook()
@@ -579,9 +605,16 @@ async def telegram_webhook(request:Request,
  x_telegram_bot_api_secret_token:str|None=Header(default=None)):
     if x_telegram_bot_api_secret_token!=WEBHOOK_SECRET:
         raise HTTPException(status_code=403,detail="Invalid webhook secret")
-    update=Update.model_validate(await request.json(),context={"bot":bot})
-    await dp.feed_update(bot,update)
-    return JSONResponse({"ok":True})
+    try:
+        update=Update.model_validate(await request.json(),context={"bot":bot})
+        update_queue.put_nowait(update)
+    except asyncio.QueueFull:
+        log.error("Telegram update queue is full; asking Telegram to retry")
+        raise HTTPException(status_code=503,detail="Bot is busy; retry later")
+    except Exception:
+        log.exception("Invalid Telegram webhook update")
+        raise HTTPException(status_code=400,detail="Invalid update")
+    return JSONResponse({"ok":True,"queued":True})
 
 
 # Hugging Face ZeroGPU requires the Gradio SDK. Mount the Gradio interface
