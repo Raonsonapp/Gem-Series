@@ -94,23 +94,51 @@ CREATE TABLE IF NOT EXISTS gem_listener_sessions(
 CREATE INDEX IF NOT EXISTS gem_posts_status_idx ON gem_posts(status);
 """
 
-def extract_watch_url(msg):
-    """Use the source post's own watch/download URL; never invent a destination."""
-    preferred=("тамошо","гирифтан","watch","смотреть","скачать","download")
+def extract_source_bot_start(msg):
+    """Extract the exact /start payload for the official free source bot."""
+    candidates=[]
     try:
         for row in (getattr(msg,"buttons",None) or []):
             for button in row:
-                label=(getattr(button,"text","") or "").lower()
-                url=getattr(button,"url",None)
-                if url and any(word in label for word in preferred):
-                    return url
+                url=getattr(button,"url",None) or ""
+                if url:
+                    candidates.append(url)
         for entity in (getattr(msg,"entities",None) or []):
-            url=getattr(entity,"url",None)
+            url=getattr(entity,"url",None) or ""
             if url:
-                return url
+                candidates.append(url)
+        candidates.extend(re.findall(r"https?://t\.me/GEMSERIES_ROBOT\?start=[A-Za-z0-9_-]+",
+                                     getattr(msg,"message","") or "", re.I))
     except Exception:
-        log.exception("Could not inspect source watch link")
+        log.exception("Could not inspect source bot start link")
+    for url in candidates:
+        match=re.search(r"(?:https?://)?t\.me/GEMSERIES_ROBOT\?start=([A-Za-z0-9_-]+)",url,re.I)
+        if match:
+            return match.group(1)
     return None
+
+async def fetch_video_from_source_bot(source_msg):
+    """Use the authorized MTProto account to request the free item linked by a channel post."""
+    payload=extract_source_bot_start(source_msg)
+    if not payload:
+        log.warning("Source post %s has no @GEMSERIES_ROBOT start link",getattr(source_msg,"id",None))
+        return None, None
+    source_bot=await user_client.get_entity("@GEMSERIES_ROBOT")
+    log.info("Requesting free source item from @GEMSERIES_ROBOT with start payload %s",payload)
+    try:
+        async with user_client.conversation(source_bot, timeout=75, exclusive=True) as conv:
+            await conv.send_message("/start "+payload)
+            for attempt in range(10):
+                response=await conv.get_response()
+                if is_actual_video(response):
+                    log.info("Received source-bot video for source post %s",source_msg.id)
+                    return response, source_bot
+                log.info("Source bot response %s/%s contains no video yet",attempt+1,10)
+    except Exception:
+        log.exception("Could not retrieve video from @GEMSERIES_ROBOT for source post %s",
+                      getattr(source_msg,"id",None))
+    return None, source_bot
+
 
 def published_caption(msg):
     """Render every imported film post in GEM SERIES house style with its own bot deep-link."""
@@ -296,27 +324,29 @@ def is_free_source_post(msg):
     return True
 
 async def process_source_message(msg, source_entity, source_id):
-    if not msg or getattr(msg,"out",False) or not is_actual_video(msg):
+    if not msg or getattr(msg,"out",False):
         return False
     if not is_free_source_post(msg):
-        log.info("Skipped post not explicitly linked to free bot (or marked VIP): %s/%s", source_id, getattr(msg,"id",None))
+        log.info("Skipped explicitly paid/VIP source post: %s/%s",source_id,getattr(msg,"id",None))
         return False
+
     source_mid=int(msg.id)
     exists=await pool.fetchrow(
       "SELECT status,published_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
       source_id,source_mid)
     if exists and exists["status"]=="published":
-        if exists["published_message_id"]:
-            try:
-                await bot.edit_message_caption(
-                    chat_id=DESTINATION_CHANNEL,
-                    message_id=exists["published_message_id"],
-                    caption=published_caption(msg),
-                    parse_mode="HTML",
-                    reply_markup=None)
-            except Exception:
-                log.exception("Could not refresh published post caption %s/%s",source_id,source_mid)
         return False
+
+    # Prefer a playable video attached to the channel post. If it is only a
+    # poster/announcement, request the linked free episode from GEMSERIES_ROBOT.
+    media_msg=msg
+    media_entity=source_entity
+    if not is_actual_video(msg):
+        media_msg,media_entity=await fetch_video_from_source_bot(msg)
+        if not media_msg or not media_entity:
+            log.warning("No video returned by source bot for channel post %s/%s",source_id,source_mid)
+            return False
+
     await pool.execute("""
       INSERT INTO gem_posts(source_chat_id,source_message_id,source_date,caption,status)
       VALUES($1,$2,$3,$4,'processing')
@@ -325,9 +355,8 @@ async def process_source_message(msg, source_entity, source_id):
       WHERE gem_posts.status <> 'published'
     """,source_id,source_mid,msg.date,(msg.message or ""))
     try:
-        # Forward the authorized source post into the archive as the signed-in account.
         archived=await user_client.forward_messages(
-            entity=DATABASE_CHANNEL, messages=msg, from_peer=source_entity
+            entity=DATABASE_CHANNEL, messages=media_msg, from_peer=media_entity
         )
         if isinstance(archived,list):
             archived=archived[0]
@@ -342,7 +371,8 @@ async def process_source_message(msg, source_entity, source_id):
           UPDATE gem_posts SET database_message_id=$3,published_message_id=$4,status='published'
           WHERE source_chat_id=$1 AND source_message_id=$2
         """,source_id,source_mid,archive_id,sent.message_id)
-        log.info("Published source post %s/%s",source_id,source_mid)
+        log.info("Published source post %s/%s using media from %s",
+                 source_id,source_mid,getattr(media_entity,"username",None) or str(media_entity))
         return True
     except Exception:
         await pool.execute("""
