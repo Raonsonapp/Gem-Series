@@ -148,9 +148,14 @@ async def fetch_video_from_source_bot(source_msg):
     return None, source_bot
 
 
+def tg_text(value):
+    """Normalize escaped line breaks accidentally stored as literal text."""
+    return str(value or "").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", " ")
+
+
 def published_caption(msg):
     """Render every imported film post in GEM SERIES house style with its own bot deep-link."""
-    raw=(getattr(msg,"message","") or "").strip()
+    raw=tg_text(getattr(msg,"message","")).strip()
     source_id=int(utils.get_peer_id(getattr(msg,"chat",None))) if getattr(msg,"chat",None) else int(getattr(msg,"peer_id",0) or 0)
     post_id=int(getattr(msg,"id",0) or 0)
     bot_url=f"https://t.me/{BOT_USERNAME}?start=post_{source_id}_{post_id}"
@@ -264,8 +269,8 @@ async def check_subscription_callback(query: CallbackQuery):
         return
 
     if not is_subscribed:
-        await query.message.answer(
-            "❌ Шумо ҳоло ба @tm_score обуна нестед. Аввал обуна шавед ва баъд «Санҷидани обуна»-ро пахш кунед.",
+        await query.message.edit_text(
+            "🔒 Барои гирифтани сериал аввал ба канали TM SCORE обуна шавед.\\n\\nПас аз обуна тугмаи «Санҷидани обуна»-ро пахш кунед.",
             reply_markup=join_keyboard(post_key))
         return
 
@@ -279,6 +284,7 @@ async def check_subscription_callback(query: CallbackQuery):
                 "✅ Обуна тасдиқ шуд, аммо ин видео ҳоло дар база дастрас нест. Лутфан баъдтар кӯшиш кунед."
             )
             return
+        await query.message.edit_text("✅ Обуна тасдиқ шуд!\\n\\n🎬 Сериал ба шумо фиристода мешавад.",reply_markup=None)
         await bot.copy_message(
             chat_id=query.message.chat.id,
             from_chat_id=DATABASE_CHANNEL,
@@ -286,6 +292,9 @@ async def check_subscription_callback(query: CallbackQuery):
         )
         return
 
+    await query.message.edit_text(
+        "✅ Обунаи шумо тасдиқ шуд!\\n\\n🎬 Акнун метавонед сериалҳоро аз GEM SERIES гиред.",
+        reply_markup=None)
     if wants_latest:
         try:
             await send_latest_video(query.message.chat.id)
@@ -293,7 +302,6 @@ async def check_subscription_callback(query: CallbackQuery):
             log.exception("Could not send latest series: user=%s",query.from_user.id)
             await query.message.answer("❌ Сериал ҳоло фиристода нашуд. Баъдтар аз нав кӯшиш кунед.")
         return
-    await query.message.answer("✅ Обунаи шумо тасдиқ шуд! Акнун метавонед сериалро тамошо кунед. 🎬")
 
 def is_actual_video(msg):
     """Accept only a playable video file, not poster photos or ordinary documents."""
@@ -547,34 +555,33 @@ async def start_handler(message:Message):
     if not match:
         greeting=(
             "👋 Асалому алайкум!\n\n"
-            "🎬 <b>Хуш омадед ба GEM SERIES!</b>\n"
-            "Барои дидани филмҳо ва қисмҳои сериалҳо ба канали расмии мо гузаред.\n\n"
-            "🍿 Навгониҳо бо тавсиф ва тугмаи тамошо дар канал ҷойгир мешаванд.\n"
-            "👇 Барои интихоби сериал ба канал ворид шавед."
+            "🎬 <b>Хуш омадед ба GEM SERIES!</b>\n\n"
+            "🍿 Барои тамошои филмҳо ва қисмҳои сериалҳо ба канали расмии мо гузаред.\n\n"
+            "✨ Дар канал постер, маълумоти сериал ва тугмаи «ТАМОШО КАРДАН» ҷойгир мешаванд.\n\n"
+            "👇 Барои интихоби сериал ба канал дароед."
         )
-        await message.answer(greeting,parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🎬 КАНАЛИ РАСМИИ МО",url=OWN_CHANNEL_URL)
-            ]]))
-        log.info("Handled bare /start: user=%s chat=%s",message.from_user.id,message.chat.id)
+        await message.answer(tg_text(greeting),parse_mode="HTML",reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🎬 КАНАЛИ GEM SERIES",url=OWN_CHANNEL_URL)]]))
+        log.info("Handled /start: user=%s chat=%s",message.from_user.id,message.chat.id)
         return
     key=(int(match.group(1)),int(match.group(2)))
     if not await subscription_ok(message.from_user.id):
-        await message.answer("🔒 Барои гирифтани видео аввал ба TM SCORE обуна шавед.",
-                             reply_markup=join_keyboard(key))
+        await message.answer(
+            "🔒 Барои гирифтани видео аввал ба канали TM SCORE обуна шавед.\n\nПас аз обуна тугмаи санҷишро пахш кунед.",
+            reply_markup=join_keyboard(key))
         return
     row=await pool.fetchrow("""
       SELECT database_message_id,caption FROM gem_posts
       WHERE source_chat_id=$1 AND source_message_id=$2 AND status='published'
     """,*key)
     if not row or not row["database_message_id"]:
-        await message.answer("Ин мавод ҳоло дастрас нест.")
+        await message.answer("⚠️ Ин сериал ҳоло дастрас нест. Баъдтар аз нав кӯшиш кунед.")
         return
     try:
         await bot.copy_message(chat_id=message.chat.id,from_chat_id=DATABASE_CHANNEL,
             message_id=row["database_message_id"],caption=row["caption"] or None,parse_mode="HTML")
     except Exception:
-        log.exception("Could not deliver latest video to user=%s",message.from_user.id)
+        log.exception("Could not deliver video to user=%s",message.from_user.id)
         await message.answer("❌ Ҳоло видео фиристода нашуд. Лутфан каме пас боз кӯшиш кунед.")
 
 async def process_telegram_update(update):
