@@ -352,7 +352,7 @@ async def owner_request_code(request:Request):
     owner_key_ok(request)
     data=await request.json()
     phone=str(data.get("phone","")).strip()
-    if not re.fullmatch(r"\\+[1-9]\\d{7,14}",phone):
+    if not re.fullmatch(r"\+[1-9]\d{7,14}",phone):
         raise HTTPException(status_code=400,detail="Рақами телефонро бо формати +992 нависед")
     old=pending_login.pop(phone,None)
     if old:
