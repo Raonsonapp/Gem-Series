@@ -532,12 +532,12 @@ async def start_handler(message:Message):
             "📢 Канали мо: @"+OWN_CHANNEL_USERNAME+"\n\n"
             "Барои кушодани видео аз тугмаи «▶️ ТАМОШО КАРДАН» зери филми интихобшуда истифода баред."
         )
-        if await subscription_ok(message.from_user.id):
-            await message.answer(greeting,reply_markup=welcome_keyboard())
-        else:
-            await message.answer(
-                greeting+"\n\n🔒 Барои гирифтани видео аввал ба TM SCORE обуна шавед ва «Санҷидани обуна»-ро пахш кунед.",
-                reply_markup=join_keyboard())
+        # Reply to /start immediately; do not make the greeting depend on a
+        # membership API request. Membership is checked only when the user
+        # presses the verification button or requests a specific film.
+        await message.answer(
+            greeting+"\n\n🔒 Барои гирифтани филм аввал ба TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
+            reply_markup=join_keyboard())
         return
     key=(int(match.group(1)),int(match.group(2)))
     if not await subscription_ok(message.from_user.id):
