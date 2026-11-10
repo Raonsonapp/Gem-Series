@@ -436,7 +436,6 @@ async def start_handler(message:Message):
     await bot.copy_message(chat_id=message.chat.id,from_chat_id=DATABASE_CHANNEL,
                            message_id=row["database_message_id"])
 
-@asynccontextmanager
 async def telegram_update_worker():
     while True:
         update=await update_queue.get()
