@@ -110,13 +110,59 @@ def extract_watch_url(msg):
     return None
 
 def published_caption(msg):
-    caption=(getattr(msg,"message","") or "").strip()
-    watch_url=extract_watch_url(msg)
-    if watch_url:
-        caption=html.escape(caption[:850])
-        caption += '\n\n<a href="' + html.escape(watch_url,quote=True) + '">✅ ТАМОШО КАРДАН</a>'
-        return caption
-    return html.escape(caption[:1024])
+    """Render every imported film post in GEM SERIES house style with its own bot deep-link."""
+    raw=(getattr(msg,"message","") or "").strip()
+    source_id=int(utils.get_peer_id(getattr(msg,"chat",None))) if getattr(msg,"chat",None) else int(getattr(msg,"peer_id",0) or 0)
+    post_id=int(getattr(msg,"id",0) or 0)
+    bot_url=f"https://t.me/{BOT_USERNAME}?start=post_{source_id}_{post_id}"
+
+    # Remove source-channel promotional buttons/links and competitor branding.
+    cleaned=[]
+    for line in raw.splitlines():
+        low=line.lower()
+        if any(word in low for word in ("тамошо кардан","тамошо /","watch","смотреть","гирифтани кисм","гирифтани қисм")):
+            continue
+        if "╔" in line or "╚" in line or "════" in line or "────" in line:
+            continue
+        if "истехсоли:" in low or "истеҳсоли:" in low or "t.me/" in low or "https://" in low:
+            continue
+        line=re.sub(r"^\s*[✅☑️📢🔊]+\s*","",line).strip()
+        if line:
+            cleaned.append(line)
+
+    title=""
+    details=[]
+    tags=[]
+    for line in cleaned:
+        if line.startswith("#"):
+            tags.append(line)
+        elif not title and any(ch.isalpha() for ch in line) and not re.search(r"(қисми?|кисми?|серия)\s*\d+",line,re.I):
+            title=line
+        else:
+            details.append(line)
+
+    out=["🎬 <b>GEM SERIES</b>","━━━━━━━━━━━━━━━━"]
+    if title:
+        out.append("🍿 <b>"+html.escape(title[:100])+"</b>")
+    for line in details[:5]:
+        low=line.lower()
+        if "қисм" in low or "кисм" in low or "серия" in low:
+            icon="🎞"
+        elif "дубляж" in low or "озвуч" in low or "забон" in low:
+            icon="🎙"
+        elif "сифат" in low or "quality" in low:
+            icon="💎"
+        else:
+            icon="📌"
+        out.append(icon+" "+html.escape(line[:150]))
+    if tags:
+        out.append(html.escape(" ".join(tags[:3])))
+    out.extend([
+        "━━━━━━━━━━━━━━━━",
+        '▶️ <a href="'+html.escape(bot_url,quote=True)+'"><b>ТАМОШО ДАР GEM SERIES</b></a>',
+        '🌐 <a href="'+html.escape(DESTINATION_URL,quote=True)+'">КАНАЛИ МО: @afsonaishab</a>'
+    ])
+    return "\n".join(out)[:1024]
 
 def join_keyboard(key=None):
     rows=[[InlineKeyboardButton(text="📢 Обуна шудан ба TM SCORE",url=SUBSCRIPTION_URL)]]
