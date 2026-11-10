@@ -63,6 +63,9 @@ DESTINATION_CHANNEL=channel_value("TARGET_CHANNEL_ID","DESTINATION_CHANNEL_ID","
 SUBSCRIPTION_CHANNELS=["@tm_score"]
 SUBSCRIPTION_CHANNEL=SUBSCRIPTION_CHANNELS[0] if SUBSCRIPTION_CHANNELS else "@tm_score"
 DESTINATION_URL=os.getenv("CHANNEL_URL","https://t.me/afsonaishab")
+# Public GEM SERIES channel shown to users; never expose the source channel in welcome text.
+OWN_CHANNEL_USERNAME=os.getenv("OWN_CHANNEL_USERNAME","afsonaishab").lstrip("@")
+OWN_CHANNEL_URL=os.getenv("OWN_CHANNEL_URL",DESTINATION_URL)
 SUBSCRIPTION_URL=os.getenv("SUBSCRIPTION_URL","https://t.me/tm_score")
 SPONSOR_BOT_URL=os.getenv("SPONSOR_BOT_URL","").strip()
 pool=None
@@ -151,7 +154,7 @@ def published_caption(msg):
     cleaned=[]
     for line in raw.splitlines():
         low=line.lower()
-        if any(word in low for word in ("тамошо кардан","тамошо /","watch","смотреть","гирифтани кисм","гирифтани қисм")):
+        if any(word in low for word in ("тамошо кардан","тамошо дар gem series","тамошо /","watch","смотреть","гирифтани кисм","гирифтани қисм")):
             continue
         if "╔" in line or "╚" in line or "════" in line or "────" in line:
             continue
@@ -218,6 +221,7 @@ def join_keyboard(key=None):
 def welcome_keyboard():
     # Keep users inside this bot; the channel is not the video-delivery destination.
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎬 КАНАЛИ GEM SERIES",url=OWN_CHANNEL_URL)],
         [InlineKeyboardButton(text="📢 Обуна ба TM SCORE",url=SUBSCRIPTION_URL)],
         [InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")]
     ])
@@ -276,7 +280,9 @@ async def check_subscription_callback(query: CallbackQuery):
         )
         return
 
-    await send_latest_video(query.message.chat.id)
+    await query.message.answer(
+        "✅ Обунаи шумо тасдиқ шуд!\n\n🎬 Хуш омадед ба GEM SERIES. Барои тамошои филмҳо ба канали расмии мо гузаред: @"+OWN_CHANNEL_USERNAME,
+        reply_markup=welcome_keyboard())
 
 def is_actual_video(msg):
     """Accept only a playable video file, not poster photos or ordinary documents."""
@@ -519,11 +525,18 @@ async def start_handler(message:Message):
     payload=args[1] if len(args)>1 else ""
     match=re.fullmatch(r"post_(-?\d+)_([0-9]+)",payload)
     if not match:
+        greeting=(
+            "✅ Асалому алейкум!\n\n"
+            "🎬 Хуш омадед ба GEM SERIES!\n"
+            "Дар ин бот метавонед филмҳо ва қисмҳои сериалҳоро аз канали расмии мо дастрас кунед.\n\n"
+            "📢 Канали мо: @"+OWN_CHANNEL_USERNAME+"\n\n"
+            "Барои кушодани видео аз тугмаи «▶️ ТАМОШО КАРДАН» зери филми интихобшуда истифода баред."
+        )
         if await subscription_ok(message.from_user.id):
-            await send_latest_video(message.chat.id)
+            await message.answer(greeting,reply_markup=welcome_keyboard())
         else:
             await message.answer(
-                "🎬 Хуш омадед ба GEM SERIES! Барои гирифтани видео аввал ба TM SCORE обуна шавед ва баъд тугмаи санҷишро пахш кунед.",
+                greeting+"\n\n🔒 Барои гирифтани видео аввал ба TM SCORE обуна шавед ва «Санҷидани обуна»-ро пахш кунед.",
                 reply_markup=join_keyboard())
         return
     key=(int(match.group(1)),int(match.group(2)))
