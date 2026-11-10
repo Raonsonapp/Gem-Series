@@ -367,10 +367,22 @@ async def process_source_message(msg, source_entity, source_id):
 
     source_mid=int(msg.id)
     exists=await pool.fetchrow(
-      "SELECT status,published_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
+      "SELECT status,published_message_id,poster_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
       source_id,source_mid)
     if exists and exists["status"]=="published":
-        return False
+        if exists["poster_message_id"]:
+            return False
+        # Convert earlier video-in-channel posts to poster-only cards.
+        try:
+            if exists["published_message_id"]:
+                await bot.delete_message(chat_id=DESTINATION_CHANNEL,message_id=exists["published_message_id"])
+        except Exception:
+            log.exception("Could not remove legacy public video post %s/%s",source_id,source_mid)
+            return False
+        await pool.execute("""
+          UPDATE gem_posts SET status='received',published_message_id=NULL,poster_message_id=NULL
+          WHERE source_chat_id=$1 AND source_message_id=$2
+        """,source_id,source_mid)
 
     # Prefer a playable video attached to the channel post. If it is only a
     # poster/announcement, request the linked free episode from GEMSERIES_ROBOT.
