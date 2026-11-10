@@ -729,7 +729,8 @@ async def lifespan(app:FastAPI):
             await asyncio.gather(*update_tasks,return_exceptions=True)
         if user_client and user_client.is_connected():
             await user_client.disconnect()
-        await bot.delete_webhook()
+        # Keep the webhook registered during shutdown. An old/restarting
+        # Space process must not erase the webhook configured by its replacement.
         await bot.session.close()
         if pool:
             await pool.close()
