@@ -271,7 +271,7 @@ async def check_subscription_callback(query: CallbackQuery):
 
     if post_key:
         row = await pool.fetchrow(
-            "SELECT database_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2 AND status='published'",
+            "SELECT database_message_id,caption FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2 AND status='published'",
             *post_key
         )
         if not row or not row["database_message_id"]:
@@ -282,7 +282,7 @@ async def check_subscription_callback(query: CallbackQuery):
         await bot.copy_message(
             chat_id=query.message.chat.id,
             from_chat_id=DATABASE_CHANNEL,
-            message_id=row["database_message_id"]
+            message_id=row["database_message_id"],caption=row["caption"] or None,parse_mode="HTML"
         )
         return
 
@@ -546,10 +546,10 @@ async def start_handler(message:Message):
     match=re.fullmatch(r"post_(-?\d+)_([0-9]+)",payload)
     if not match:
         greeting=(
-            "👋 Асалому алайкум!\\n\\n"
-            "🎬 <b>Хуш омадед ба GEM SERIES!</b>\\n"
-            "Барои дидани филмҳо ва қисмҳои сериалҳо ба канали расмии мо гузаред.\\n\\n"
-            "🍿 Навгониҳо бо тавсиф ва тугмаи тамошо дар канал ҷойгир мешаванд.\\n"
+            "👋 Асалому алайкум!\n\n"
+            "🎬 <b>Хуш омадед ба GEM SERIES!</b>\n"
+            "Барои дидани филмҳо ва қисмҳои сериалҳо ба канали расмии мо гузаред.\n\n"
+            "🍿 Навгониҳо бо тавсиф ва тугмаи тамошо дар канал ҷойгир мешаванд.\n"
             "👇 Барои интихоби сериал ба канал ворид шавед."
         )
         await message.answer(greeting,parse_mode="HTML",
@@ -564,7 +564,7 @@ async def start_handler(message:Message):
                              reply_markup=join_keyboard(key))
         return
     row=await pool.fetchrow("""
-      SELECT database_message_id FROM gem_posts
+      SELECT database_message_id,caption FROM gem_posts
       WHERE source_chat_id=$1 AND source_message_id=$2 AND status='published'
     """,*key)
     if not row or not row["database_message_id"]:
@@ -572,7 +572,7 @@ async def start_handler(message:Message):
         return
     try:
         await bot.copy_message(chat_id=message.chat.id,from_chat_id=DATABASE_CHANNEL,
-                               message_id=row["database_message_id"])
+            message_id=row["database_message_id"],caption=row["caption"] or None,parse_mode="HTML")
     except Exception:
         log.exception("Could not deliver latest video to user=%s",message.from_user.id)
         await message.answer("❌ Ҳоло видео фиристода нашуд. Лутфан каме пас боз кӯшиш кунед.")
