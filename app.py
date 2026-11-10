@@ -59,7 +59,8 @@ def channel_id_list(value):
 SOURCE_CHANNEL=channel_value("SOURCE_CHANNEL_ID","AUTHORIZED_SOURCE_CHANNEL_ID","SOURCE_CHANNEL",default="@GEM_SERIES_TJ")
 DATABASE_CHANNEL=channel_value("DATABASE_CHANNEL_ID","DATABASE_CHANNEL",default="@database_gem_series")
 DESTINATION_CHANNEL=channel_value("TARGET_CHANNEL_ID","DESTINATION_CHANNEL_ID","DESTINATION_CHANNEL",default="@afsonaishab")
-SUBSCRIPTION_CHANNELS=channel_id_list(os.getenv("SUBSCRIPTION_CHANNEL_IDS") or os.getenv("SUBSCRIPTION_CHANNEL_ID") or os.getenv("SUBSCRIPTION_CHANNEL") or "@tm_score")
+# GEM SERIES requires only TM SCORE membership; ignore stale extra channel IDs from old Space secrets.
+SUBSCRIPTION_CHANNELS=["@tm_score"]
 SUBSCRIPTION_CHANNEL=SUBSCRIPTION_CHANNELS[0] if SUBSCRIPTION_CHANNELS else "@tm_score"
 DESTINATION_URL=os.getenv("CHANNEL_URL","https://t.me/afsonaishab")
 SUBSCRIPTION_URL=os.getenv("SUBSCRIPTION_URL","https://t.me/tm_score")
