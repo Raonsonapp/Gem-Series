@@ -247,11 +247,9 @@ def source_bot_usernames(msg):
 
 
 def is_free_source_post(msg):
-    """Publish only posts explicitly linked to the free bot; always reject VIP bot posts."""
+    """Accept playable source posts unless they are explicitly VIP/paid."""
     users=source_bot_usernames(msg)
     if "gemseriesvip_bot" in users:
-        return False
-    if "gemseries_robot" not in users:
         return False
     text=(getattr(msg, "message", "") or "").lower()
     paid_markers=(
@@ -261,6 +259,8 @@ def is_free_source_post(msg):
     )
     if any(marker in text for marker in paid_markers):
         return False
+    # Some source posts do not contain a free-bot button or username.
+    # Do not reject those by default; only explicit VIP/paid posts are excluded.
     return True
 
 async def process_source_message(msg, source_entity, source_id):
