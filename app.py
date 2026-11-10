@@ -270,7 +270,7 @@ async def check_subscription_callback(query: CallbackQuery):
 
     if not is_subscribed:
         await query.message.edit_text(
-            "🔒 Барои гирифтани сериал аввал ба канали TM SCORE обуна шавед.\\n\\nПас аз обуна тугмаи «Санҷидани обуна»-ро пахш кунед.",
+            tg_text("🔒 Барои гирифтани сериал аввал ба канали TM SCORE обуна шавед.\\n\\nПас аз обуна тугмаи «Санҷидани обуна»-ро пахш кунед."),
             reply_markup=join_keyboard(post_key))
         return
 
@@ -284,7 +284,7 @@ async def check_subscription_callback(query: CallbackQuery):
                 "✅ Обуна тасдиқ шуд, аммо ин видео ҳоло дар база дастрас нест. Лутфан баъдтар кӯшиш кунед."
             )
             return
-        await query.message.edit_text("✅ Обуна тасдиқ шуд!\\n\\n🎬 Сериал ба шумо фиристода мешавад.",reply_markup=None)
+        await query.message.edit_text(tg_text("✅ Обуна тасдиқ шуд!\\n\\n🎬 Сериал ба шумо фиристода мешавад."),reply_markup=None)
         await bot.copy_message(
             chat_id=query.message.chat.id,
             from_chat_id=DATABASE_CHANNEL,
@@ -293,7 +293,7 @@ async def check_subscription_callback(query: CallbackQuery):
         return
 
     await query.message.edit_text(
-        "✅ Обунаи шумо тасдиқ шуд!\\n\\n🎬 Акнун метавонед сериалҳоро аз GEM SERIES гиред.",
+        tg_text("✅ Обунаи шумо тасдиқ шуд!\\n\\n🎬 Акнун метавонед сериалҳоро аз GEM SERIES гиред."),
         reply_markup=None)
     if wants_latest:
         try:
