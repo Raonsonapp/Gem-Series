@@ -6,6 +6,7 @@ import html
 import logging
 import time
 import os
+import httpx
 from datetime import datetime, timezone, timedelta
 import re
 from contextlib import asynccontextmanager
@@ -75,7 +76,9 @@ pending_login={}
 # Telegram webhook requests are acknowledged quickly; updates are processed by one worker.
 update_queue=asyncio.Queue(maxsize=1000)
 update_worker_task=None
+heartbeat_task=None
 update_tasks=set()
+processed_update_ids=set()
 update_semaphore=asyncio.Semaphore(20)
 bot=Bot(BOT_TOKEN)
 dp=Dispatcher()
@@ -586,32 +589,59 @@ async def start_handler(message:Message):
 
 async def process_telegram_update(update):
     async with update_semaphore:
-        try:
-            await asyncio.wait_for(dp.feed_update(bot,update),timeout=25)
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            log.error("Telegram update timed out: update_id=%s",getattr(update,"update_id",None))
-        except Exception:
-            log.exception("Telegram update processing failed: update_id=%s",getattr(update,"update_id",None))
+        update_id=getattr(update,"update_id",None)
+        for attempt in range(1,4):
+            try:
+                await asyncio.wait_for(dp.feed_update(bot,update),timeout=30)
+                log.info("Telegram update processed: update_id=%s",update_id)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Telegram update failed (attempt %s/3): update_id=%s",attempt,update_id)
+                if attempt < 3:
+                    await asyncio.sleep(attempt * 2)
+        log.error("Telegram update abandoned after retries: update_id=%s",update_id)
 
 async def telegram_update_worker():
+    log.info("Telegram update worker started; sequential processing enabled")
     while True:
         update=await update_queue.get()
         try:
-            task=asyncio.create_task(process_telegram_update(update))
-            update_tasks.add(task)
-            task.add_done_callback(update_tasks.discard)
+            update_id=getattr(update,"update_id",None)
+            if update_id is not None and update_id in processed_update_ids:
+                log.info("Duplicate Telegram update ignored: update_id=%s",update_id)
+                continue
+            await process_telegram_update(update)
+            if update_id is not None:
+                processed_update_ids.add(update_id)
+                if len(processed_update_ids)>5000:
+                    processed_update_ids.clear()
+                    processed_update_ids.add(update_id)
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("Could not schedule Telegram update")
+            log.exception("Telegram update worker failed")
         finally:
             update_queue.task_done()
 
+async def keepalive_worker():
+    """Send a lightweight health request every ten minutes and log the heartbeat."""
+    url=f"{PUBLIC_URL}/health"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        while True:
+            await asyncio.sleep(600)
+            try:
+                response=await client.get(url)
+                log.info("10-minute heartbeat: health_http=%s",response.status_code)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("10-minute heartbeat request failed")
+
 @asynccontextmanager
 async def lifespan(app:FastAPI):
-    global pool, update_worker_task
+    global pool, update_worker_task, heartbeat_task
     pool=await asyncpg.create_pool(DATABASE_URL,min_size=1,max_size=5,command_timeout=30,
                                    server_settings={"application_name":"gem-series-bot"})
     global BOT_USERNAME
@@ -622,7 +652,9 @@ async def lifespan(app:FastAPI):
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA)
     update_worker_task=asyncio.create_task(telegram_update_worker(),name="telegram-update-worker")
+    heartbeat_task=asyncio.create_task(keepalive_worker(),name="ten-minute-heartbeat")
     log.info("Telegram update worker started")
+    log.info("10-minute health heartbeat scheduled")
     await start_mtproto_listener()
     webhook_info=await bot.get_webhook_info()
     target_webhook=f"{PUBLIC_URL}/telegram/webhook"
@@ -636,6 +668,12 @@ async def lifespan(app:FastAPI):
     try:
         yield
     finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
         if update_worker_task:
             update_worker_task.cancel()
             try:
