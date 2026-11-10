@@ -6,7 +6,7 @@ import html
 import logging
 import time
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import re
 from contextlib import asynccontextmanager
 
@@ -453,7 +453,7 @@ async def import_source_message(event):
 async def import_free_since_start(source_entity):
     """Backfill eligible free episodes published from 2026-11-10 onward."""
     source_id=int(utils.get_peer_id(source_entity))
-    cutoff=datetime(2026,11,10,tzinfo=timezone.utc)
+    cutoff=datetime(2026,11,10,0,tzinfo=timezone(timedelta(hours=5)))
     scanned=published=skipped=failed=0
     log.info("Starting free-series backfill from %s UTC",cutoff.isoformat())
     async for msg in user_client.iter_messages(source_entity,reverse=True,offset_date=cutoff):
