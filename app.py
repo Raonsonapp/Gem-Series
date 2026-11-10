@@ -160,7 +160,7 @@ def published_caption(msg):
     out.extend([
         "━━━━━━━━━━━━━━━━",
         '▶️ <a href="'+html.escape(bot_url,quote=True)+'"><b>ТАМОШО ДАР GEM SERIES</b></a>',
-        '🌐 <a href="'+html.escape(DESTINATION_URL,quote=True)+'">КАНАЛИ МО: @afsonaishab</a>'
+        '🌐 <a href="'+html.escape(DESTINATION_URL,quote=True)+'">GEM SERIES • @afsonaishab</a>'
     ])
     return "\n".join(out)[:1024]
 
@@ -199,8 +199,43 @@ async def check_subscription_callback(query: CallbackQuery):
                 "❌ Шумо ҳоло ба @tm_score обуна нестед. Аввал обуна шавед ва боз санҷед.",
                 reply_markup=join_keyboard())
 
+def is_actual_video(msg):
+    """Accept only a playable video file, not poster photos or ordinary documents."""
+    if not msg or not getattr(msg, "media", None):
+        return False
+    try:
+        if getattr(msg, "video", None):
+            return True
+        file_obj=getattr(msg, "file", None)
+        mime=(getattr(file_obj, "mime_type", "") or "").lower()
+        if mime.startswith("video/"):
+            return True
+        document=getattr(msg, "document", None)
+        if document:
+            from telethon.tl.types import DocumentAttributeVideo
+            return any(isinstance(attr, DocumentAttributeVideo)
+                       for attr in (getattr(document, "attributes", None) or []))
+    except Exception:
+        log.exception("Could not inspect source media type")
+    return False
+
+
+def is_paid_only_post(msg):
+    """Conservatively skip content explicitly marked as paid/VIP/premium."""
+    text=(getattr(msg, "message", "") or "").lower()
+    paid_markers=(
+        "пулаки", "пулӣ", "платный", "платная", "платное",
+        "paid", "premium", "vip", "vip only", "обунаи пулак",
+        "танҳо пулак", "только платно"
+    )
+    return any(marker in text for marker in paid_markers)
+
+
 async def process_source_message(msg, source_entity, source_id):
-    if not msg or getattr(msg,"out",False) or not getattr(msg,"media",None):
+    if not msg or getattr(msg,"out",False) or not is_actual_video(msg):
+        return False
+    if is_paid_only_post(msg):
+        log.info("Skipped paid/VIP source post %s/%s", source_id, getattr(msg,"id",None))
         return False
     source_mid=int(msg.id)
     exists=await pool.fetchrow(
@@ -264,15 +299,18 @@ async def import_source_message(event):
 async def import_one_latest_for_test(source_entity):
     """Import exactly one latest media post as an initial smoke test."""
     source_id=int(utils.get_peer_id(source_entity))
-    async for msg in user_client.iter_messages(source_entity,limit=30):
-        if getattr(msg,"media",None) and not getattr(msg,"out",False):
+    async for msg in user_client.iter_messages(source_entity,limit=100):
+        if is_actual_video(msg) and not getattr(msg,"out",False):
+            if is_paid_only_post(msg):
+                log.info("Skipped paid/VIP video during initial import: %s", msg.id)
+                continue
             done=await process_source_message(msg,source_entity,source_id)
             if done:
-                log.info("Initial one-post test import completed.")
+                log.info("Initial one-free-video test import completed.")
             else:
-                log.info("Latest media was already imported or import failed; no duplicate sent.")
+                log.info("Latest eligible video was already imported or import failed; no duplicate sent.")
             return
-    log.warning("No media post found in the latest 30 source messages.")
+    log.warning("No eligible free video found in the latest 100 source messages.")
 
 async def start_mtproto_listener():
     global user_client
