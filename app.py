@@ -209,11 +209,25 @@ def join_keyboard(key=None):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def welcome_keyboard():
+    # Keep users inside this bot; the channel is not the video-delivery destination.
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Канали GEM SERIES",url=DESTINATION_URL)],
         [InlineKeyboardButton(text="📢 Обуна ба TM SCORE",url=SUBSCRIPTION_URL)],
         [InlineKeyboardButton(text="✅ Санҷидани обуна",callback_data="check_subscription")]
     ])
+
+async def send_latest_video(chat_id):
+    row=await pool.fetchrow("""
+      SELECT database_message_id FROM gem_posts
+      WHERE status='published' AND database_message_id IS NOT NULL
+      ORDER BY created_at DESC LIMIT 1
+    """)
+    if not row:
+        await bot.send_message(chat_id,
+            "🎬 Ҳоло видео дастрас нест. Вақте маводи иҷозатдодашуда ба база ворид шавад, ҳамин ҷо пайдо мешавад.")
+        return False
+    await bot.copy_message(chat_id=chat_id,from_chat_id=DATABASE_CHANNEL,
+                           message_id=row["database_message_id"])
+    return True
 
 @dp.callback_query(lambda query: query.data == "check_subscription" or (query.data or "").startswith("check_post:"))
 async def check_subscription_callback(query: CallbackQuery):
@@ -255,9 +269,7 @@ async def check_subscription_callback(query: CallbackQuery):
         )
         return
 
-    await query.message.answer(
-        "🎬 Хуш омадед! Обунаи шумо тасдиқ шуд.",
-        reply_markup=welcome_keyboard())
+    await send_latest_video(query.message.chat.id)
 
 def is_actual_video(msg):
     """Accept only a playable video file, not poster photos or ordinary documents."""
@@ -501,11 +513,11 @@ async def start_handler(message:Message):
     match=re.fullmatch(r"post_(-?\d+)_([0-9]+)",payload)
     if not match:
         if await subscription_ok(message.from_user.id):
-            await message.answer("🎬 Хуш омадед ба GEM SERIES! ✅ Обунаи шумо тасдиқ шуд.",
-                                 reply_markup=welcome_keyboard())
+            await send_latest_video(message.chat.id)
         else:
-            await message.answer("🎬 Хуш омадед ба GEM SERIES! Барои истифода аввал ба канали TM SCORE обуна шавед, баъд «Санҷидани обуна»-ро пахш кунед.",
-                                 reply_markup=join_keyboard())
+            await message.answer(
+                "🎬 Хуш омадед ба GEM SERIES! Барои гирифтани видео аввал ба TM SCORE обуна шавед ва баъд тугмаи санҷишро пахш кунед.",
+                reply_markup=join_keyboard())
         return
     key=(int(match.group(1)),int(match.group(2)))
     if not await subscription_ok(message.from_user.id):
