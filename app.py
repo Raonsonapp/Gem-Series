@@ -106,50 +106,61 @@ CREATE INDEX IF NOT EXISTS gem_posts_status_idx ON gem_posts(status);
 """
 
 def extract_source_bot_start(msg):
-    """Extract the exact /start payload for the official free source bot."""
+    """Read the free-video deep link from the source post's actual watch button."""
     candidates=[]
     try:
+        # Prefer the URL attached to the button labelled "watch".
         for row in (getattr(msg,"buttons",None) or []):
             for button in row:
+                label=(getattr(button,"text","") or "").strip().lower()
                 url=getattr(button,"url",None) or ""
                 if url:
-                    candidates.append(url)
+                    priority=0 if any(x in label for x in ("тамошо","смотреть","watch","▶")) else 1
+                    candidates.append((priority,url))
         for entity in (getattr(msg,"entities",None) or []):
             url=getattr(entity,"url",None) or ""
             if url:
-                candidates.append(url)
-        candidates.extend(re.findall(r"https?://t\.me/GEMSERIES_ROBOT\?start=[A-Za-z0-9_-]+",
-                                     getattr(msg,"message","") or "", re.I))
+                candidates.append((2,url))
+        candidates.extend((3,url) for url in re.findall(
+            r"https?://t\.me/GEMSERIES_ROBOT\?start=[A-Za-z0-9_-]+",
+            getattr(msg,"message","") or "",re.I))
     except Exception:
-        log.exception("Could not inspect source bot start link")
-    for url in candidates:
-        match=re.search(r"(?:https?://)?t\.me/GEMSERIES_ROBOT\?start=([A-Za-z0-9_-]+)",url,re.I)
+        log.exception("Could not inspect source post watch button")
+    for _,url in sorted(candidates,key=lambda item:item[0]):
+        match=re.search(
+            r"(?:https?://)?t\.me/GEMSERIES_ROBOT\?start=([A-Za-z0-9_-]+)",
+            url,re.I)
         if match:
             return match.group(1)
     return None
 
+
 async def fetch_video_from_source_bot(source_msg):
-    """Use the authorized MTProto account to request the free item linked by a channel post."""
+    """Open the free bot's watch deep-link, then collect the actual video it returns."""
     payload=extract_source_bot_start(source_msg)
     if not payload:
-        log.warning("Source post %s has no @GEMSERIES_ROBOT start link",getattr(source_msg,"id",None))
+        log.warning("Source post %s has no free-bot watch button/link to @GEMSERIES_ROBOT",
+                    getattr(source_msg,"id",None))
         return None, None
     source_bot=await user_client.get_entity("@GEMSERIES_ROBOT")
-    log.info("Requesting free source item from @GEMSERIES_ROBOT with start payload %s",payload)
+    log.info("Opening source post watch button: @GEMSERIES_ROBOT?start=%s (post=%s)",
+             payload,getattr(source_msg,"id",None))
     try:
-        async with user_client.conversation(source_bot, timeout=75, exclusive=True) as conv:
+        async with user_client.conversation(source_bot, timeout=90, exclusive=True) as conv:
+            # Opening a t.me bot deep-link is equivalent to pressing its channel button.
             await conv.send_message("/start "+payload)
-            for attempt in range(10):
+            for attempt in range(15):
                 response=await conv.get_response()
                 if is_actual_video(response):
-                    log.info("Received source-bot video for source post %s",source_msg.id)
+                    log.info("WATCH BUTTON SUCCESS: source post=%s; video_message=%s",
+                             source_msg.id,response.id)
                     return response, source_bot
-                log.info("Source bot response %s/%s contains no video yet",attempt+1,10)
+                log.info("Watch-button response %s/15 is not video yet (post=%s)",
+                         attempt+1,source_msg.id)
     except Exception:
-        log.exception("Could not retrieve video from @GEMSERIES_ROBOT for source post %s",
+        log.exception("Watch-button retrieval failed for source post %s",
                       getattr(source_msg,"id",None))
     return None, source_bot
-
 
 def tg_text(value):
     """Normalize escaped line breaks accidentally stored as literal text."""
