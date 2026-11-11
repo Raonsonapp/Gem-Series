@@ -451,6 +451,8 @@ async def process_source_message(msg, source_entity, source_id):
       source_id,source_mid)
     if exists and exists["status"]=="published":
         if exists["poster_message_id"]:
+            log.info("BACKFILL SKIP already published: source=%s/%s published_message_id=%s",
+                     source_id,source_mid,exists["published_message_id"])
             return False
         # Convert earlier video-in-channel posts to poster-only cards.
         try:
@@ -468,10 +470,15 @@ async def process_source_message(msg, source_entity, source_id):
     # poster/announcement, request the linked free episode from GEMSERIES_ROBOT.
     media_msg=msg
     media_entity=source_entity
-    if not is_actual_video(msg):
+    direct_video=is_actual_video(msg)
+    watch_payload=extract_source_bot_start(msg)
+    log.info("IMPORT CANDIDATE: source=%s/%s direct_video=%s watch_button_payload=%s",
+             source_id,source_mid,direct_video,bool(watch_payload))
+    if not direct_video:
         media_msg,media_entity=await fetch_video_from_source_bot(msg)
         if not media_msg or not media_entity:
-            log.warning("No video returned by source bot for channel post %s/%s",source_id,source_mid)
+            log.error("IMPORT STOP: no playable video obtained for source=%s/%s; direct_video=%s watch_button_payload=%s",
+                      source_id,source_mid,direct_video,bool(watch_payload))
             return False
 
     await pool.execute("""
@@ -555,10 +562,14 @@ async def import_free_since_start(source_entity):
             skipped += 1
             continue
         try:
+            log.info("BACKFILL ITEM: source=%s message=%s direct_video=%s watch_button=%s",
+                     source_id,msg.id,is_actual_video(msg),bool(extract_source_bot_start(msg)))
             if await process_source_message(msg,source_entity,source_id):
                 published += 1
             else:
                 failed += 1
+                log.warning("BACKFILL ITEM NOT PUBLISHED: source=%s message=%s",
+                            source_id,msg.id)
         except Exception:
             failed += 1
             log.exception("Backfill item failed: source=%s message=%s",source_id,msg.id)
