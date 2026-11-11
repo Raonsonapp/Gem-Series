@@ -552,7 +552,7 @@ async def import_free_since_start(source_entity):
     """Backfill eligible free episodes published from 2026-11-10 onward."""
     source_id=int(utils.get_peer_id(source_entity))
     cutoff=datetime(2026,11,10,0,tzinfo=timezone(timedelta(hours=5)))
-    scanned=published=skipped=failed=0
+    scanned=published=skipped=duplicates=failed=0
     log.info("Starting free-series backfill from %s UTC",cutoff.isoformat())
     async for msg in user_client.iter_messages(source_entity,reverse=True,offset_date=cutoff):
         scanned += 1
@@ -564,20 +564,27 @@ async def import_free_since_start(source_entity):
         try:
             log.info("BACKFILL ITEM: source=%s message=%s direct_video=%s watch_button=%s",
                      source_id,msg.id,is_actual_video(msg),bool(extract_source_bot_start(msg)))
+            existing=await pool.fetchrow(
+                "SELECT status,poster_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
+                source_id,int(msg.id))
+            if existing and existing["status"]=="published" and existing["poster_message_id"]:
+                duplicates += 1
+                log.info("BACKFILL DUPLICATE SKIPPED: source=%s message=%s",source_id,msg.id)
+                continue
             if await process_source_message(msg,source_entity,source_id):
                 published += 1
             else:
                 failed += 1
-                log.warning("BACKFILL ITEM NOT PUBLISHED: source=%s message=%s",
+                log.warning("BACKFILL IMPORT FAILED: source=%s message=%s",
                             source_id,msg.id)
         except Exception:
             failed += 1
             log.exception("Backfill item failed: source=%s message=%s",source_id,msg.id)
         if scanned % 25 == 0:
-            log.info("Backfill progress: scanned=%s published=%s skipped_paid=%s failed=%s",
-                     scanned,published,skipped,failed)
-    log.info("BACKFILL FINISHED: scanned=%s published=%s skipped_paid=%s failed=%s",
-             scanned,published,skipped,failed)
+            log.info("Backfill progress: scanned=%s published=%s duplicates=%s skipped_paid=%s failed=%s",
+                     scanned,published,duplicates,skipped,failed)
+    log.info("BACKFILL FINISHED: scanned=%s published=%s duplicates=%s skipped_paid=%s failed=%s",
+             scanned,published,duplicates,skipped,failed)
 
 
 async def start_mtproto_listener():
