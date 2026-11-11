@@ -136,30 +136,64 @@ def extract_source_bot_start(msg):
 
 
 async def fetch_video_from_source_bot(source_msg):
-    """Open the free bot's watch deep-link, then collect the actual video it returns."""
+    """Open the free-bot deep link and follow safe watch/quality buttons until video arrives."""
     payload=extract_source_bot_start(source_msg)
     if not payload:
         log.warning("Source post %s has no free-bot watch button/link to @GEMSERIES_ROBOT",
                     getattr(source_msg,"id",None))
         return None, None
     source_bot=await user_client.get_entity("@GEMSERIES_ROBOT")
-    log.info("Opening source post watch button: @GEMSERIES_ROBOT?start=%s (post=%s)",
-             payload,getattr(source_msg,"id",None))
+    post_id=getattr(source_msg,"id",None)
+    log.info("WATCH FLOW START: bot=@GEMSERIES_ROBOT post=%s payload_present=True",post_id)
     try:
-        async with user_client.conversation(source_bot, timeout=90, exclusive=True) as conv:
-            # Opening a t.me bot deep-link is equivalent to pressing its channel button.
+        async with user_client.conversation(source_bot, timeout=25, exclusive=True) as conv:
             await conv.send_message("/start "+payload)
-            for attempt in range(15):
-                response=await conv.get_response()
+            log.info("WATCH FLOW START COMMAND SENT: post=%s",post_id)
+            for attempt in range(1,9):
+                try:
+                    response=await conv.get_response()
+                except asyncio.TimeoutError:
+                    log.warning("WATCH FLOW TIMEOUT: post=%s step=%s",post_id,attempt)
+                    break
                 if is_actual_video(response):
                     log.info("WATCH BUTTON SUCCESS: source post=%s; video_message=%s",
-                             source_msg.id,response.id)
+                             post_id,response.id)
                     return response, source_bot
-                log.info("Watch-button response %s/15 is not video yet (post=%s)",
-                         attempt+1,source_msg.id)
+
+                body=(getattr(response,"message","") or "").strip()
+                log.info("WATCH FLOW RESPONSE: post=%s step=%s message_id=%s text=%r",
+                         post_id,attempt,getattr(response,"id",None),body[:240])
+                buttons=getattr(response,"buttons",None) or []
+                clicked=False
+                for row_index,row in enumerate(buttons):
+                    for col_index,button in enumerate(row):
+                        label=(getattr(button,"text","") or "").strip()
+                        low=label.lower()
+                        if any(word in low for word in (
+                            "тамошо","смотреть","watch","видео","video","скачать",
+                            "download","получить","гирифтан","360","480","720","1080"
+                        )):
+                            try:
+                                log.info("WATCH FLOW CLICK: post=%s step=%s button=%r",
+                                         post_id,attempt,label[:100])
+                                await response.click(row_index,col_index)
+                                clicked=True
+                                break
+                            except Exception:
+                                log.exception("WATCH FLOW BUTTON CLICK FAILED: post=%s button=%r",
+                                              post_id,label[:100])
+                    if clicked:
+                        break
+                if clicked:
+                    continue
+                if buttons:
+                    labels=[[getattr(button,"text","") for button in row] for row in buttons]
+                    log.info("WATCH FLOW BUTTONS NOT MATCHED: post=%s buttons=%r",post_id,labels)
+                elif not body:
+                    log.info("WATCH FLOW EMPTY NON-VIDEO RESPONSE: post=%s step=%s",post_id,attempt)
     except Exception:
-        log.exception("Watch-button retrieval failed for source post %s",
-                      getattr(source_msg,"id",None))
+        log.exception("Watch-button retrieval failed for source post %s",post_id)
+    log.error("WATCH FLOW NO VIDEO: post=%s after up to 8 bot responses",post_id)
     return None, source_bot
 
 def tg_text(value):
