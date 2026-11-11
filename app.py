@@ -371,6 +371,62 @@ def is_free_source_post(msg):
     # Do not reject those by default; only explicit VIP/paid posts are excluded.
     return True
 
+def extract_series_title(msg):
+    """Extract the series name from the source post for TMDB poster lookup."""
+    raw=tg_text(getattr(msg,"message","")).strip()
+    for line in raw.splitlines():
+        line=re.sub(r"^\s*[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*","",line).strip()
+        low=line.lower()
+        if not line or line.startswith("#") or "t.me/" in low or "https://" in low:
+            continue
+        if re.search(r"(қисми?|кисми?|серия)\s*\d+",low):
+            continue
+        if any(word in low for word in ("дубляж","истехсол","истеҳсол","сифат","quality","тамошо кардан")):
+            continue
+        return line[:120]
+    return ""
+
+async def fetch_tmdb_poster(msg):
+    """Find the TV series poster on TMDB using the configured private API key."""
+    api_key=os.getenv("TMDB_API_KEY","").strip()
+    if not api_key:
+        log.warning("TMDB_API_KEY is not configured; falling back to source poster")
+        return None
+    title=extract_series_title(msg)
+    if not title:
+        log.warning("Could not extract series title for TMDB poster lookup")
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=20.0,follow_redirects=True) as client:
+            response=await client.get(
+                "https://api.themoviedb.org/3/search/tv",
+                params={"api_key":api_key,"query":title,"language":"en-US","include_adult":"false"}
+            )
+            response.raise_for_status()
+            results=response.json().get("results") or []
+            if not results:
+                response=await client.get(
+                    "https://api.themoviedb.org/3/search/movie",
+                    params={"api_key":api_key,"query":title,"language":"en-US","include_adult":"false"}
+                )
+                response.raise_for_status()
+                results=response.json().get("results") or []
+            if not results or not results[0].get("poster_path"):
+                log.warning("TMDB has no poster for title=%r",title)
+                return None
+            poster_url="https://image.tmdb.org/t/p/w780"+results[0]["poster_path"]
+            image_response=await client.get(poster_url)
+            image_response.raise_for_status()
+            image_bytes=image_response.content
+            if not image_bytes:
+                return None
+            log.info("TMDB poster downloaded for title=%r tmdb_id=%s",title,results[0].get("id"))
+            return image_bytes
+    except Exception:
+        log.exception("TMDB poster lookup failed for title=%r; using source poster",title)
+        return None
+
+
 async def process_source_message(msg, source_entity, source_id):
     if not msg or getattr(msg,"out",False):
         return False
@@ -431,14 +487,16 @@ async def process_source_message(msg, source_entity, source_id):
                  source_id,source_mid,archive_id,
                  getattr(getattr(archived_check,"file",None),"mime_type",None))
         # Public channel gets poster + metadata only; the video stays in the private archive.
-        poster_bytes=None
-        try:
-            if getattr(msg,"photo",None):
-                poster_bytes=await user_client.download_media(msg.photo,file=bytes)
-            if not poster_bytes:
-                poster_bytes=await user_client.download_media(media_msg,file=bytes,thumb=-1)
-        except Exception:
-            log.exception("Poster extraction failed for %s/%s",source_id,source_mid)
+        # Prefer the official TMDB series artwork; source-channel poster is fallback only.
+        poster_bytes=await fetch_tmdb_poster(msg)
+        if not poster_bytes:
+            try:
+                if getattr(msg,"photo",None):
+                    poster_bytes=await user_client.download_media(msg.photo,file=bytes)
+                if not poster_bytes:
+                    poster_bytes=await user_client.download_media(media_msg,file=bytes,thumb=-1)
+            except Exception:
+                log.exception("Poster extraction failed for %s/%s",source_id,source_mid)
         caption=published_caption(msg)
         if poster_bytes:
             sent=await bot.send_photo(chat_id=DESTINATION_CHANNEL,
