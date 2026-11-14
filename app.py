@@ -681,6 +681,98 @@ async def subscription_ok(user_id):
             return False
     return True
 
+
+# Owner-only manual import: /series, then forward the exact series announcement post.
+series_import_waiting=set()
+
+def parse_series_request(text):
+    raw=tg_text(text).strip()
+    if not raw:
+        return None, None
+    ep_match=re.search(r"(?:қисми?|кисми?|серия)\\s*(?:№\\s*)?(\\d+)",raw,re.I)
+    if not ep_match:
+        ep_match=re.search(r"(?:қисмҳо|кисмхо|серия)\\s*(?:аз\\s*)?(\\d+)\\s*(?:то|-)\\s*(\\d+)",raw,re.I)
+        if ep_match:
+            start,end=map(int,ep_match.groups())
+            episodes=set(range(min(start,end),max(start,end)+1))
+        else:
+            return None,None
+    else:
+        episodes={int(ep_match.group(1))}
+    lines=[]
+    for line in raw.splitlines():
+        line=re.sub(r"^\\s*[\\U0001F000-\\U0001FAFF\\u2600-\\u27BF\\uFE0F\\u200D]+\\s*","",line).strip()
+        low=line.lower()
+        if not line or line.startswith("#") or re.search(r"(қисми?|кисми?|серия)\\s*\\d+",low):
+            continue
+        if any(x in low for x in ("дубляж","сифат","качество","истеҳсол","истехсол","t.me/","https://")):
+            continue
+        lines.append(line)
+    return (lines[0][:120] if lines else None),episodes
+
+def normalize_series_name(value):
+    return re.sub(r"[^a-zа-яёғқҳҷӯӣў0-9]+","",str(value or "").lower())
+
+@dp.message(lambda message: (message.text or "").strip().split("@",1)[0] == "/series")
+async def series_command(message:Message):
+    if not user_client or not user_client.is_connected():
+        await message.answer("❌ Пайвасти канали манбаъ фаъол нест.")
+        return
+    owner=await user_client.get_me()
+    if not owner or message.from_user.id != owner.id:
+        await message.answer("⛔ Ин фармон танҳо барои соҳиби бот аст.")
+        return
+    series_import_waiting.add(message.from_user.id)
+    await message.answer("🎬 Баннер ё пости аслии сериалро аз канал ба ман Forward кун. Ном ва рақами қисмҳо бояд дар caption бошанд.")
+
+@dp.message(lambda message: bool(message.from_user and message.from_user.id in series_import_waiting))
+async def series_import_request(message:Message):
+    owner=await user_client.get_me() if user_client and user_client.is_connected() else None
+    if not owner or message.from_user.id != owner.id:
+        return
+    raw=message.caption or message.text or ""
+    title,episodes=parse_series_request(raw)
+    if not title or not episodes:
+        await message.answer("⚠️ Аз пости фиристода ном ва рақами қисмро хонда натавонистам. Лутфан худи пости каналро бо caption-и аслиаш Forward кун, на скриншот.")
+        return
+    series_import_waiting.discard(message.from_user.id)
+    await message.answer("🔎 Ҷустуҷӯ: <b>"+html.escape(title)+"</b> | қисмҳои "+", ".join(map(str,sorted(episodes)))+"\nЛутфан интизор шав...",parse_mode="HTML")
+    try:
+        source=await user_client.get_entity(SOURCE_CHANNEL)
+        source_id=int(utils.get_peer_id(source))
+        wanted=normalize_series_name(title)
+        found={}
+        async for candidate in user_client.iter_messages(source,limit=5000):
+            body=tg_text(getattr(candidate,"message",""))
+            candidate_title=extract_series_title(candidate)
+            if not candidate_title or normalize_series_name(candidate_title) != wanted:
+                continue
+            m=re.search(r"(?:қисми?|кисми?|серия)\\s*(?:№\\s*)?(\\d+)",body,re.I)
+            if not m:
+                continue
+            number=int(m.group(1))
+            if number in episodes and number not in found:
+                found[number]=candidate
+            if episodes.issubset(found):
+                break
+        missing=sorted(episodes-set(found))
+        imported=[]
+        for number in sorted(found):
+            ok=await process_source_message(found[number],source,source_id)
+            if ok:
+                imported.append(number)
+            else:
+                row=await pool.fetchrow("SELECT status FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",source_id,int(found[number].id))
+                if row and row["status"]=="published":
+                    imported.append(number)
+        result="✅ Ворид шуд: "+(", ".join(map(str,imported)) if imported else "ҳеҷ кадом")
+        if missing:
+            result+="\n⚠️ Дар канал ёфт нашуд: "+", ".join(map(str,missing))
+        await message.answer(result)
+    except Exception:
+        log.exception("Manual /series import failed")
+        await message.answer("❌ Ҳангоми ҷустуҷӯ ё ворид кардани сериал хато шуд. Логҳои Space-ро санҷ.")
+
 @dp.message(CommandStart())
 async def start_handler(message:Message):
     args=(message.text or "").split(maxsplit=1)
