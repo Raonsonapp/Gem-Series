@@ -689,9 +689,9 @@ def parse_series_request(text):
     raw=tg_text(text).strip()
     if not raw:
         return None, None
-    ep_match=re.search(r"(?:қисми?|кисми?|серия)\\s*(?:№\\s*)?(\\d+)",raw,re.I)
+    ep_match=re.search(r"(?:қисми?|кисми?|серия)\s*(?:№\s*)?(\d+)",raw,re.I)
     if not ep_match:
-        ep_match=re.search(r"(?:қисмҳо|кисмхо|серия)\\s*(?:аз\\s*)?(\\d+)\\s*(?:то|-)\\s*(\\d+)",raw,re.I)
+        ep_match=re.search(r"(?:қисмҳо|кисмхо|серия)\s*(?:аз\s*)?(\d+)\s*(?:то|-)\s*(\d+)",raw,re.I)
         if ep_match:
             start,end=map(int,ep_match.groups())
             episodes=set(range(min(start,end),max(start,end)+1))
@@ -701,9 +701,9 @@ def parse_series_request(text):
         episodes={int(ep_match.group(1))}
     lines=[]
     for line in raw.splitlines():
-        line=re.sub(r"^\\s*[\\U0001F000-\\U0001FAFF\\u2600-\\u27BF\\uFE0F\\u200D]+\\s*","",line).strip()
+        line=re.sub(r"^\s*[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*","",line).strip()
         low=line.lower()
-        if not line or line.startswith("#") or re.search(r"(қисми?|кисми?|серия)\\s*\\d+",low):
+        if not line or line.startswith("#") or re.search(r"(қисми?|кисми?|серия)\s*\d+",low):
             continue
         if any(x in low for x in ("дубляж","сифат","качество","истеҳсол","истехсол","t.me/","https://")):
             continue
@@ -747,7 +747,7 @@ async def series_import_request(message:Message):
             candidate_title=extract_series_title(candidate)
             if not candidate_title or normalize_series_name(candidate_title) != wanted:
                 continue
-            m=re.search(r"(?:қисми?|кисми?|серия)\\s*(?:№\\s*)?(\\d+)",body,re.I)
+            m=re.search(r"(?:қисми?|кисми?|серия)\s*(?:№\s*)?(\d+)",body,re.I)
             if not m:
                 continue
             number=int(m.group(1))
