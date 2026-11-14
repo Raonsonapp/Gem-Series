@@ -731,9 +731,23 @@ async def series_import_request(message:Message):
     if not owner or message.from_user.id != owner.id:
         return
     raw=message.caption or message.text or ""
+    # Resolve the original forwarded channel post when Telegram supplies its origin.
+    origin=getattr(message,"forward_origin",None)
+    origin_mid=getattr(origin,"message_id",None)
+    origin_chat=getattr(origin,"chat",None)
+    if origin_chat and origin_mid:
+        try:
+            source_post=await user_client.get_messages(SOURCE_CHANNEL,ids=int(origin_mid))
+            if source_post and getattr(source_post,"message",None):
+                raw=source_post.message
+        except Exception:
+            log.exception("Could not resolve forwarded source post: origin_message_id=%s",origin_mid)
     title,episodes=parse_series_request(raw)
+    log.info("MANUAL SERIES INPUT: user=%s caption_present=%s origin_message_id=%s parsed_title=%r parsed_episodes=%r raw=%r",
+             message.from_user.id if message.from_user else None,bool(message.caption),origin_mid,title,
+             sorted(episodes) if episodes else None,raw[:500])
     if not title or not episodes:
-        await message.answer("⚠️ Аз пости фиристода ном ва рақами қисмро хонда натавонистам. Лутфан худи пости каналро бо caption-и аслиаш Forward кун, на скриншот.")
+        await message.answer("⚠️ Матни пости фиристода хонда нашуд. Пости аслиро аз @GEM_SERIES_TJ бо caption-и пурра Forward кун.")
         return
     series_import_waiting.discard(message.from_user.id)
     await message.answer("🔎 Ҷустуҷӯ: <b>"+html.escape(title)+"</b> | қисмҳои "+", ".join(map(str,sorted(episodes)))+"\nЛутфан интизор шав...",parse_mode="HTML")
