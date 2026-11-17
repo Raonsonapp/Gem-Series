@@ -483,18 +483,27 @@ async def process_source_message(msg, source_entity, source_id):
     exists=await pool.fetchrow(
       "SELECT status,published_message_id,poster_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
       source_id,source_mid)
+    existing_archive_id=None
     if exists and exists["status"]=="published":
-        if exists["poster_message_id"]:
-            log.info("BACKFILL SKIP already published: source=%s/%s published_message_id=%s",
-                     source_id,source_mid,exists["published_message_id"])
+        # A DB row is not proof that the public post still exists: admins may delete
+        # it manually. Check Telegram itself, then republish if the post is gone.
+        public_post=None
+        public_id=exists["published_message_id"] or exists["poster_message_id"]
+        if public_id:
+            try:
+                public_post=await user_client.get_messages(DESTINATION_CHANNEL,ids=int(public_id))
+            except Exception:
+                log.exception("Could not verify existing public post %s/%s",source_id,source_mid)
+                return False
+        if public_post:
+            log.info("PUBLIC POST STILL EXISTS: source=%s/%s published_message_id=%s",
+                     source_id,source_mid,public_id)
             return False
-        # Convert earlier video-in-channel posts to poster-only cards.
-        try:
-            if exists["published_message_id"]:
-                await bot.delete_message(chat_id=DESTINATION_CHANNEL,message_id=exists["published_message_id"])
-        except Exception:
-            log.exception("Could not remove legacy public video post %s/%s",source_id,source_mid)
-            return False
+        existing_archive_id=await pool.fetchval(
+            "SELECT database_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
+            source_id,source_mid)
+        log.info("PUBLIC POST WAS DELETED: source=%s/%s; republishing from archive=%s",
+                 source_id,source_mid,existing_archive_id)
         await pool.execute("""
           UPDATE gem_posts SET status='received',published_message_id=NULL,poster_message_id=NULL
           WHERE source_chat_id=$1 AND source_message_id=$2
@@ -506,9 +515,9 @@ async def process_source_message(msg, source_entity, source_id):
     media_entity=source_entity
     direct_video=is_actual_video(msg)
     watch_payload=extract_source_bot_start(msg)
-    log.info("IMPORT CANDIDATE: source=%s/%s direct_video=%s watch_button_payload=%s",
-             source_id,source_mid,direct_video,bool(watch_payload))
-    if not direct_video:
+    log.info("IMPORT CANDIDATE: source=%s/%s direct_video=%s watch_button_payload=%s reuse_archive=%s",
+             source_id,source_mid,direct_video,bool(watch_payload),bool(existing_archive_id))
+    if not existing_archive_id and not direct_video:
         media_msg,media_entity=await fetch_video_from_source_bot(msg)
         if not media_msg or not media_entity:
             log.error("IMPORT STOP: no playable video obtained for source=%s/%s; direct_video=%s watch_button_payload=%s",
@@ -523,14 +532,22 @@ async def process_source_message(msg, source_entity, source_id):
       WHERE gem_posts.status <> 'published'
     """,source_id,source_mid,msg.date,published_caption(msg))
     try:
-        archived=await user_client.forward_messages(
-            entity=DATABASE_CHANNEL, messages=media_msg, from_peer=media_entity
-        )
-        if isinstance(archived,list):
-            archived=archived[0]
-        archive_id=int(archived.id)
+        if existing_archive_id:
+            archive_id=int(existing_archive_id)
+            archived_check=await user_client.get_messages(DATABASE_CHANNEL,ids=archive_id)
+            if not is_actual_video(archived_check):
+                raise RuntimeError(f"Previously archived video {archive_id} is missing or invalid")
+            log.info("Reusing existing archive video: source=%s/%s archive_message_id=%s",
+                     source_id,source_mid,archive_id)
+        else:
+            archived=await user_client.forward_messages(
+                entity=DATABASE_CHANNEL, messages=media_msg, from_peer=media_entity
+            )
+            if isinstance(archived,list):
+                archived=archived[0]
+            archive_id=int(archived.id)
+            archived_check=await user_client.get_messages(DATABASE_CHANNEL,ids=archive_id)
         # Verify that the archive message is a real playable video before publishing its poster.
-        archived_check=await user_client.get_messages(DATABASE_CHANNEL,ids=archive_id)
         if not is_actual_video(archived_check):
             raise RuntimeError(
                 f"Archive message {archive_id} is not a playable video; refusing to publish a broken watch button"
