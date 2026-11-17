@@ -502,12 +502,27 @@ async def process_source_message(msg, source_entity, source_id):
         existing_archive_id=await pool.fetchval(
             "SELECT database_message_id FROM gem_posts WHERE source_chat_id=$1 AND source_message_id=$2",
             source_id,source_mid)
-        log.info("PUBLIC POST WAS DELETED: source=%s/%s; republishing from archive=%s",
+        log.info("PUBLIC POST WAS DELETED: source=%s/%s; checking archive=%s",
                  source_id,source_mid,existing_archive_id)
+        # The archive copy may also have been deleted. Verify it now; if missing,
+        # clear the stale DB pointer and fetch the episode again from the source.
+        if existing_archive_id:
+            try:
+                archived_existing=await user_client.get_messages(
+                    DATABASE_CHANNEL,ids=int(existing_archive_id))
+                if not is_actual_video(archived_existing):
+                    log.warning("ARCHIVE COPY MISSING/INVALID: source=%s/%s archive_id=%s; refetching from source",
+                                source_id,source_mid,existing_archive_id)
+                    existing_archive_id=None
+            except Exception:
+                log.exception("Could not verify archive copy; will refetch source episode: source=%s/%s",
+                              source_id,source_mid)
+                existing_archive_id=None
         await pool.execute("""
-          UPDATE gem_posts SET status='received',published_message_id=NULL,poster_message_id=NULL
+          UPDATE gem_posts SET status='received',published_message_id=NULL,
+          poster_message_id=NULL,database_message_id=$3
           WHERE source_chat_id=$1 AND source_message_id=$2
-        """,source_id,source_mid)
+        """,source_id,source_mid,existing_archive_id)
 
     # Prefer a playable video attached to the channel post. If it is only a
     # poster/announcement, request the linked free episode from GEMSERIES_ROBOT.
